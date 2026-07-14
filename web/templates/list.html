@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}지식 허브 — 목록·검색{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content">
+    <form class="searchbar" action="/ui/search" method="get" role="search">
+      <input class="field" type="search" name="q" value="{{ q or '' }}"
+        placeholder="검색 (예: FTS5, 앵커, 배포)"
+        hx-get="/ui/search" hx-target="#results"
+        hx-trigger="keyup changed delay:300ms, search">
+    </form>
+    <div id="results">
+      {% include "_results.html" %}
+    </div>
+  </div>
+</div>
+{% endblock %}

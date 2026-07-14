@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content">
+    <h1>{{ title }}</h1>
+
+    {% if errors %}
+    <div class="banner banner-danger">
+      <strong>저장 차단 — lint 실패</strong>
+      <ul>{% for r in errors %}<li>{{ r }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    {% if warnings %}
+    <div class="banner banner-warning">
+      <strong>AI 초안 — 저장 전 확인 (lint 참고, 저장 시 정식 검증)</strong>
+      <ul>{% for r in warnings %}<li>{{ r }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    <form method="post" action="{{ action }}">
+      <p><label>작성자 (actor)</label><br>
+        <input class="field" type="text" name="actor" value="{{ actor or 'anonymous' }}"></p>
+
+      <p><label>마크다운 (frontmatter 포함)</label><br>
+        <textarea class="field mono" name="markdown" rows="24" spellcheck="false">{{ markdown }}</textarea></p>
+
+      <p><label>의도된 변경 (선택 · docs-diff)</label><br>
+        <textarea class="field mono" name="intended_diff" rows="3" spellcheck="false">{{ intended_diff or '' }}</textarea></p>
+
+      <div style="margin-top: var(--space-3)">
+        <button class="btn btn-primary" type="submit">저장</button>
+        <a class="btn" href="/">취소</a>
+      </div>
+    </form>
+    <p class="muted" style="margin-top: var(--space-4)">
+      저장은 save 루틴을 경유합니다 — 정규화·lint 게이트·delta 이력·재색인이 자동 처리되며,
+      lint 실패(예: ADR 대안 섹션 비어 있음) 시 저장이 차단됩니다.
+    </p>
+  </div>
+</div>
+{% endblock %}

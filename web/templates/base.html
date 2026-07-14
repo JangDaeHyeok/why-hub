@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}지식 허브{% endblock %}</title>
+  {% include "_theme-init.html" %}
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="/">지식 허브</a>
+      <span class="muted">Why 중심 · 유사 RAG</span>
+      <span class="spacer"></span>
+      <a class="btn" href="/ui/generate">✨ AI 생성</a>
+      <a class="btn" href="/ui/new">+ 새 문서</a>
+      <button class="theme-toggle" onclick="__toggleTheme()" title="테마 전환" aria-label="테마 전환">◐</button>
+    </header>
+    {% block body %}{% endblock %}
+  </div>
+</body>
+</html>

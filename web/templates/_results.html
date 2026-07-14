@@ -1,0 +1,25 @@
+{% if hits is not none %}
+  {% if hits %}
+    {% for h in hits %}
+    <div class="hit">
+      <div class="source">
+        <a href="/ui/docs/{{ h.doc_id }}">{{ h.doc_id }}</a>
+        · <span class="mono">#{{ h.anchor }}</span>
+        {% if h.title %}· {{ h.title }}{% endif %}
+      </div>
+      <div class="snippet">{{ h.text | truncate(160) }}</div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">결과 없음.</p>
+  {% endif %}
+{% else %}
+  {% for d in docs %}
+  <a class="card" href="/ui/docs/{{ d.id }}">
+    <div class="title">{{ d.title }}</div>
+    <div class="meta"><span class="badge">{{ d.type }}</span> <span class="badge">{{ d.status }}</span> · <span class="mono">{{ d.id }}</span></div>
+  </a>
+  {% else %}
+  <p class="muted">문서가 없습니다.</p>
+  {% endfor %}
+{% endif %}

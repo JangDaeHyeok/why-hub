@@ -1,0 +1,111 @@
+/* 컴포넌트 (§6) — 의미 토큰만 참조, 하드코딩 색상 리터럴 금지. */
+
+.app { display: flex; flex-direction: column; min-height: 100vh; }
+
+/* 상단 바 */
+.topbar {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+}
+.topbar .brand { font-weight: 700; color: var(--fg-default); }
+.topbar .spacer { flex: 1; }
+
+.layout { display: flex; gap: var(--space-6); padding: var(--space-6) var(--space-5); }
+.sidebar { width: 240px; flex-shrink: 0; }
+.content { flex: 1; min-width: 0; }
+
+/* 검색창 · 인풋 */
+.field {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-subtle);
+  color: var(--fg-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+/* 버튼 */
+.btn {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-subtle);
+  color: var(--fg-default);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.btn-primary {
+  background: var(--accent-solid);
+  color: var(--fg-on-accent);
+  border-color: transparent;
+}
+.btn-primary:hover { background: var(--accent-hover); }
+
+/* 문서 목록 카드 */
+.card {
+  display: block;
+  padding: var(--space-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-3);
+  color: inherit;
+}
+.card:hover { background: var(--accent-subtle); text-decoration: none; }
+.card .title { font-weight: 600; color: var(--fg-default); }
+.card .meta { color: var(--fg-muted); font-size: var(--text-sm); margin-top: var(--space-1); }
+
+/* 배지(타입·상태) */
+.badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+}
+
+/* 검색 결과 · 출처 앵커 */
+.hit { padding: var(--space-3) 0; border-bottom: 1px solid var(--border-default); }
+.hit .source { color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+.hit .source a { color: var(--accent-fg); }
+.hit .snippet { color: var(--fg-default); margin-top: var(--space-1); }
+
+/* 이력 타임라인 */
+.timeline { list-style: none; padding: 0; margin: 0; }
+.timeline li {
+  padding: var(--space-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+}
+.timeline .head { color: var(--fg-muted); font-size: var(--text-sm); }
+.timeline pre.delta { background: var(--bg-subtle); padding: var(--space-2); border-radius: var(--radius-sm); overflow-x: auto; }
+.delta .add { color: var(--success-fg); }
+.delta .del { color: var(--danger-fg); }
+
+/* 계보 */
+.lineage { list-style: none; padding: 0; }
+.lineage li { padding: var(--space-1) 0; color: var(--fg-muted); }
+.lineage a { color: var(--accent-fg); }
+
+/* 상태 배너 (lint 등) */
+.banner { padding: var(--space-3); border-radius: var(--radius-md); margin: var(--space-3) 0; }
+.banner-success { color: var(--success-fg); background: color-mix(in srgb, var(--success-fg) 12%, transparent); }
+.banner-warning { color: var(--warning-fg); background: color-mix(in srgb, var(--warning-fg) 12%, transparent); }
+.banner-danger { color: var(--danger-fg); background: color-mix(in srgb, var(--danger-fg) 12%, transparent); }
+
+/* 테마 토글 */
+.theme-toggle { background: none; border: none; cursor: pointer; color: var(--fg-muted); font-size: var(--text-lg); }
+
+.muted { color: var(--fg-muted); }
+.nav-link { display: block; padding: var(--space-2); border-radius: var(--radius-sm); color: var(--fg-default); }
+.nav-link:hover, .nav-link.active { background: var(--accent-subtle); text-decoration: none; }
+.tabs { display: flex; gap: var(--space-3); border-bottom: 1px solid var(--border-default); margin-bottom: var(--space-4); }
+.tabs a { padding: var(--space-2) 0; color: var(--fg-muted); }
+.tabs a.active { color: var(--accent-fg); border-bottom: 2px solid var(--accent-solid); }

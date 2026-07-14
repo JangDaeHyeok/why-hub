@@ -1,0 +1,16 @@
+<div class="doc-head">
+  <h1>{{ doc.title }}</h1>
+  <div class="meta muted">
+    <span class="badge">{{ doc.type }}</span>
+    <span class="badge">{{ doc.status }}</span>
+    <span class="mono">{{ doc.id }}</span>
+    {% if doc.updated %}<span>· {{ doc.updated }}</span>{% endif %}
+  </div>
+</div>
+<div class="tabs">
+  <a class="{{ 'active' if active == 'body' else '' }}" href="/ui/docs/{{ doc.id }}">본문</a>
+  <a class="{{ 'active' if active == 'history' else '' }}" href="/ui/docs/{{ doc.id }}/history">이력</a>
+  <a class="{{ 'active' if active == 'related' else '' }}" href="/ui/docs/{{ doc.id }}/related">계보</a>
+  <span style="flex:1"></span>
+  <a href="/ui/docs/{{ doc.id }}/edit">편집</a>
+</div>

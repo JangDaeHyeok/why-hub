@@ -1,0 +1,111 @@
+/* 디자인 토큰 — 원시(§3) + 의미(§4). 컴포넌트는 의미 토큰만 참조한다.
+   테마는 data-theme 로 전환(§2). 값은 v0 시작점(튜닝 대상), 토큰 구조는 계약. */
+
+:root {
+  /* §3.1 무채색 스케일 */
+  --gray-0: #ffffff;
+  --gray-50: #f7f8fa;
+  --gray-100: #eef0f4;
+  --gray-200: #e2e5ea;
+  --gray-300: #cbd0d9;
+  --gray-400: #9aa1ad;
+  --gray-500: #6b727e;
+  --gray-600: #4a505a;
+  --gray-700: #333840;
+  --gray-800: #20242b;
+  --gray-900: #14171c;
+  --gray-950: #0c0e12;
+  --gray-1000: #08090c;
+
+  /* §3.2 blue / §3.3 purple */
+  --blue-300: #7aa7ff;
+  --blue-400: #4d86ff;
+  --blue-500: #2f6bff;
+  --blue-600: #1f54e0;
+  --blue-700: #1a44b8;
+  --purple-300: #b39cff;
+  --purple-400: #9873ff;
+  --purple-500: #7c52f5;
+  --purple-600: #6438da;
+  --purple-700: #522eb0;
+
+  /* §3.4 상태색 */
+  --green-500: #2fa36b;
+  --amber-500: #d9922b;
+  --red-500: #d64545;
+
+  /* §4.3 accent 별칭 — 기본 블루. 퍼플로 바꾸려면 --blue-* → --purple-* 로 교체. */
+  --accent-300: var(--blue-300);
+  --accent-400: var(--blue-400);
+  --accent-500: var(--blue-500);
+  --accent-600: var(--blue-600);
+  --accent-700: var(--blue-700);
+
+  /* §5 타이포 · 간격 · 반경 */
+  --font-sans: system-ui, -apple-system, "Pretendard", "Apple SD Gothic Neo", sans-serif;
+  --font-mono: "JetBrains Mono", "D2Coding", ui-monospace, SFMono-Regular, monospace;
+  --text-xs: .78rem; --text-sm: .875rem; --text-base: 1rem;
+  --text-lg: 1.125rem; --text-xl: 1.375rem; --text-2xl: 1.75rem;
+  --leading-body: 1.65;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-8: 48px;
+  --radius-sm: 4px; --radius-md: 8px; --radius-lg: 12px;
+  --focus-ring: 0 0 0 3px var(--accent-subtle);
+}
+
+/* §4.1 라이트 테마 */
+:root,
+[data-theme="light"] {
+  --bg-canvas: var(--gray-50);
+  --bg-surface: var(--gray-0);
+  --bg-subtle: var(--gray-100);
+  --bg-inset: var(--gray-200);
+
+  --fg-default: var(--gray-900);
+  --fg-muted: var(--gray-500);
+  --fg-subtle: var(--gray-400);
+  --fg-on-accent: var(--gray-0);
+
+  --border-default: var(--gray-200);
+  --border-strong: var(--gray-300);
+
+  --accent-fg: var(--accent-600);
+  --accent-solid: var(--accent-500);
+  --accent-hover: var(--accent-600);
+  --accent-subtle: color-mix(in srgb, var(--accent-500) 12%, transparent);
+
+  --success-fg: var(--green-500);
+  --warning-fg: var(--amber-500);
+  --danger-fg: var(--red-500);
+
+  --shadow-sm: 0 1px 2px rgba(12, 14, 18, .06);
+  --shadow-md: 0 4px 12px rgba(12, 14, 18, .10);
+}
+
+/* §4.2 다크 테마 */
+[data-theme="dark"] {
+  --bg-canvas: var(--gray-1000);
+  --bg-surface: var(--gray-950);
+  --bg-subtle: var(--gray-900);
+  --bg-inset: var(--gray-800);
+
+  --fg-default: var(--gray-100);
+  --fg-muted: var(--gray-400);
+  --fg-subtle: var(--gray-500);
+  --fg-on-accent: var(--gray-0);
+
+  --border-default: var(--gray-800);
+  --border-strong: var(--gray-700);
+
+  --accent-fg: var(--accent-300);
+  --accent-solid: var(--accent-500);
+  --accent-hover: var(--accent-400);
+  --accent-subtle: color-mix(in srgb, var(--accent-400) 18%, transparent);
+
+  --success-fg: var(--green-500);
+  --warning-fg: var(--amber-500);
+  --danger-fg: var(--red-500);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-md: 0 6px 16px rgba(0, 0, 0, .5);
+}
