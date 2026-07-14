@@ -1,0 +1,13 @@
+# 런타임 의존성 (확정 스택 · CLAUDE.md §3). Phase별로 실제 사용 시점 표기.
+fastmcp    # MCP 인터페이스 (P07)
+fastapi    # HTTP 인터페이스 (P08)
+uvicorn    # HTTP 서버 구동 (P08)
+jinja2         # 읽기 UI 템플릿 (M6)
+markdown-it-py # 마크다운 서버 렌더 (M6)
+python-multipart  # 쓰기/생성 UI 폼 파싱 (M7·M8)
+pyyaml     # frontmatter/이력 YAML (P02~)
+httpx      # HTTP 테스트 (P08)
+openai     # OpenAI 호환 LLM 클라이언트 (P12)
+
+# 개발
+pytest>=8

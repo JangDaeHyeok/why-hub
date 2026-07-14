@@ -73,5 +73,9 @@ Thumbs.db
 # Project-specific
 docs/prompts/
 
+# Knowledge store 런타임 (save 루틴 생성물; 이력은 자체 delta라 git 미사용 — CLAUDE.md §2-3/§8).
+# 정본 ADR 원문은 scripts/seed_knowledge.py 에 있고, 이 디렉토리는 재생성물이다.
+/knowledge/
+
 # Claude Code personal/local settings (not shared)
 .claude/settings.local.json

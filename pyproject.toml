@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "knowledge-hub"
+version = "0.1.0"
+description = "팀 내부 지식 허브 (MVP) — Why 중심 · 유사 RAG · 자체 delta 이력 · MCP+HTTP 단일 서버"
+requires-python = ">=3.11"
+# 확정 스택 (CLAUDE.md §3). 인터페이스/색인/LLM 의존성은 해당 Phase에서 실제 사용.
+# P01(스캐폴딩)은 stdlib 만으로 동작한다.
+dependencies = [
+    "fastmcp",   # MCP 인터페이스 (P07)
+    "fastapi",       # HTTP 인터페이스 (P08)
+    "uvicorn",       # HTTP 서버 구동 (P08)
+    "jinja2",        # 읽기 UI 템플릿 (M6)
+    "markdown-it-py",  # 마크다운 서버 렌더 (M6)
+    "python-multipart",  # 쓰기/생성 UI 폼 파싱 (M7·M8)
+    "pyyaml",        # frontmatter/이력 YAML (P02~)
+    "httpx",         # HTTP 테스트 (P08)
+    "openai",        # OpenAI 호환 LLM 클라이언트 (P12)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+include = ["hub*"]
+
+[tool.pytest.ini_options]
+testpaths = ["hub/tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
