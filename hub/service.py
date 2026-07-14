@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import datetime
 import re
 from collections import deque
 from pathlib import Path
@@ -22,18 +23,22 @@ from .config import Config
 from .llm import LLMClient, LLMUnavailable
 from .models import SaveResult
 from .store import anchors as anchors_mod
-from .store import history as history_mod
-from .store import paths
-from .store import save as save_store
-from .store.index_fts import open_index
+from .store.base import Store
 from .store.lint import LintError, lint
-from .store.locking import doc_lock
 from .store.normalize import normalize
 
-# ingest 신규 채번을 직렬화하는 전역 락 id (실제 문서 id 와 충돌하지 않는 sentinel).
-_INGEST_LOCK_ID = "__ingest__"
-
 _TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
+
+
+def build_store(root, config: Config) -> Store:
+    """config 로 저장 백엔드 선택 (구현스펙-postgres-배포.md). 기본 file, 배포 postgres."""
+    if config.storage == "postgres":
+        from .store.pg_store import PostgresStore  # 지연 import (psycopg 선택 의존)
+
+        return PostgresStore(config)
+    from .store.file_store import FileStore
+
+    return FileStore(root, config)
 
 
 # 인제스천 신규 문서의 id 접두어 (id 정규식 `^[a-z]+-[0-9]{4}$` 와 정합).
@@ -48,9 +53,11 @@ def _prefix_for(doc_type: str) -> str:
 
 
 def _today() -> str:
-    import datetime
-
     return datetime.date.today().isoformat()
+
+
+def _now() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
 
 
 def _build_ingest_markdown(doc_id, doc_type, title, created, source_ref, content) -> str:
@@ -70,22 +77,18 @@ def _read_template(target_type: str) -> str:
     return tp.read_text(encoding="utf-8") if tp.exists() else ""
 
 
-def _fts_safe_query(query: str) -> str:
-    """자유 입력 → 안전한 FTS5 질의. \\w 토큰만 추출해 각 토큰을 따옴표로 감싸 AND 결합.
+def _query_tokens(query: str) -> list[str]:
+    """자유 입력 → dialect-중립 토큰(\\w+). 백엔드가 AND/OR 로 결합·이스케이프.
 
-    'foo-bar' → '"foo" "bar"', 'OR'/'"' 등 FTS 연산자·특수문자를 리터럴로 무력화한다.
-    토큰이 없으면 빈 문자열(호출측이 빈 결과 처리).
-    """
-    toks = re.findall(r"\w+", query or "")
-    return " ".join(f'"{t}"' for t in toks)
+    'foo-bar OR "x"' → ['foo','bar','OR','x'] (연산자·특수문자는 리터럴 토큰으로 무력화)."""
+    return re.findall(r"\w+", query or "")
 
 
-def _related_query(hint, sources) -> str:
-    """힌트+소스 텍스트에서 키워드를 뽑아 OR 로 묶은 FTS 질의(\\w 토큰이라 안전)."""
+def _related_tokens(hint, sources) -> list[str]:
+    """힌트+소스 텍스트에서 키워드(\\w+, len≥2, 순서보존 dedup, 상한 12) — OR 검색용."""
     text = " ".join([hint or ""] + [(s.get("text") or "") for s in sources])
     toks = [t for t in re.findall(r"\w+", text) if len(t) >= 2]
-    toks = list(dict.fromkeys(toks))[:12]  # 순서 보존 dedup, 상한
-    return " OR ".join(toks)
+    return list(dict.fromkeys(toks))[:12]
 
 
 def _build_generate_prompt(target_type, template_text, related_ctx, source_texts, hint):
@@ -136,17 +139,57 @@ def _chain(start: str, adj: dict) -> list[str]:
 class KnowledgeService:
     """저장소 코어를 감싸는 얇은 파사드. 인터페이스 독립."""
 
-    def __init__(self, root, config: Config | None = None, *, llm=None):
+    def __init__(self, root, config: Config | None = None, *, llm=None, store: Store | None = None):
         self.root = Path(root)
         self.config = config or Config()
-        self.index = open_index(self.root)  # 공유 인덱스 연결
+        # 영속은 pluggable 스토어에 위임(FileStore 기본 · PostgresStore 배포). 주입 가능(테스트).
+        self.store = store if store is not None else build_store(self.root, self.config)
         self._llm = llm  # 주입된 LLM 클라이언트(테스트/커스텀). 없으면 config 로 생성.
+        self._chat = None  # 멀티턴 오케스트레이터(지연 생성 — 인메모리 세션 보관)
 
     def _llm_client(self):
         return self._llm if self._llm is not None else LLMClient(self.config.llm)
 
+    def _orchestrator(self):
+        if self._chat is None:
+            from .chat import ChatOrchestrator  # 지연 import (순환 방지)
+
+            self._chat = ChatOrchestrator(self)
+        return self._chat
+
     def close(self) -> None:
-        self.index.close()
+        self.store.close()
+
+    # ── 멀티프로젝트 헬퍼 (구현스펙-멀티프로젝트.md) ────────────────────
+    def _resolve_project(self, raw_markdown: str, project: str | None) -> str:
+        """유효 project 결정: 인자 우선 → frontmatter → 기본 프로젝트."""
+        if project:
+            return project
+        try:
+            fmp = normalize(raw_markdown).frontmatter.get("project")
+        except Exception:
+            fmp = None
+        return fmp or self.config.default_project
+
+    def _inject_project(self, raw_markdown: str, resolved: str) -> str:
+        """비기본 project 를 frontmatter 에 기록(파일이 원천 → reconcile 안전).
+
+        기본 프로젝트는 frontmatter 를 건드리지 않는다(인덱스 coercion 이 처리 — 기존 파일/테스트 무영향).
+        """
+        if resolved == self.config.default_project:
+            return raw_markdown
+        try:
+            nd = normalize(raw_markdown)
+        except yaml.YAMLError:
+            return raw_markdown  # 파싱 실패는 이후 save/submit 의 lint 게이트가 처리
+        if nd.frontmatter.get("project") == resolved:
+            return raw_markdown
+        fm = dict(nd.frontmatter)
+        fm["project"] = resolved
+        front = yaml.safe_dump(
+            fm, allow_unicode=True, sort_keys=False, default_flow_style=False
+        )
+        return f"---\n{front}---\n\n{nd.body.strip()}\n"
 
     # ── 쓰기 ──────────────────────────────────────────────────────────
     def save_document(
@@ -156,33 +199,180 @@ class KnowledgeService:
         actor: str,
         change_type: str | None = None,
         intended_diff: str | None = None,
+        project: str | None = None,
         now: str | None = None,
-    ) -> SaveResult:
-        """모든 쓰기의 단일 진입점(store.save_document 경유). 공유 인덱스를 넘긴다."""
-        return save_store.save_document(
+    ) -> SaveResult | dict:
+        """모든 쓰기의 진입점. 승인 게이트가 켜져 있으면 즉시 반영 대신 **승인 큐에 제출**하고
+        제출 dict 를 반환한다(구현스펙-승인워크플로우.md). 꺼져 있으면 즉시 반영해 SaveResult 를 반환.
+
+        실제 반영은 언제나 `_reflect`(store.save_document 단일 경로)만 수행한다(CLAUDE.md §2-1).
+        project 는 leaf(submit_change/_reflect)에서 frontmatter 에 반영한다.
+        """
+        if self.config.approval.enabled:
+            return self.submit_change(
+                raw_markdown, actor=actor, change_type=change_type,
+                intended_diff=intended_diff, project=project, now=now,
+            )
+        return self._reflect(
             raw_markdown,
-            root=self.root,
             actor=actor,
-            config=self.config,
             change_type=change_type,
             intended_diff=intended_diff,
-            index=self.index,
+            project=project,
             now=now,
         )
 
+    def _reflect(
+        self,
+        raw_markdown: str,
+        *,
+        actor: str,
+        change_type: str | None = None,
+        intended_diff: str | None = None,
+        project: str | None = None,
+        now: str | None = None,
+    ) -> SaveResult:
+        """실제 반영 — store.reflect(신뢰 경로). 승인 시·게이트 off 에서만 호출된다."""
+        resolved = self._resolve_project(raw_markdown, project)
+        raw_markdown = self._inject_project(raw_markdown, resolved)
+        return self.store.reflect(
+            raw_markdown,
+            actor=actor,
+            change_type=change_type,
+            intended_diff=intended_diff,
+            now=now,
+        )
+
+    # ── 승인 워크플로우 (구현스펙-승인워크플로우.md) ────────────────────
+    def submit_change(
+        self,
+        raw_markdown: str,
+        *,
+        actor: str,
+        op: str = "create",
+        doc_id: str | None = None,
+        change_type: str | None = None,
+        intended_diff: str | None = None,
+        project: str | None = None,
+        now: str | None = None,
+    ) -> dict:
+        """쓰기를 승인 대기 큐에 제출. 지식 store·인덱스는 건드리지 않는다.
+
+        doc_id 는 markdown frontmatter 에서 도출(인자로 온 값 우선). id 없으면 LintError.
+        제출 시점 참고용 prelint 를 함께 저장(권위 있는 lint 는 승인 시 실제 save 가 수행).
+        """
+        now_ts = now or _now()
+        resolved_project = self._resolve_project(raw_markdown, project)
+        raw_markdown = self._inject_project(raw_markdown, resolved_project)
+        try:
+            nd = normalize(raw_markdown, now=now_ts)
+        except yaml.YAMLError as e:
+            raise LintError([f"frontmatter YAML 파싱 실패: {e}"]) from e
+        resolved_id = doc_id or nd.id
+        if not resolved_id:
+            raise LintError(["frontmatter 에 id 가 없습니다 — 제출 불가"])
+        # target id(인자)와 문서 frontmatter id 가 어긋나면 거부 — 승인 시 실제 쓰기 대상은
+        # frontmatter id 이므로, 큐에 표시된 doc_id 와 반영 결과가 달라지는 것을 막는다.
+        if doc_id and nd.id and doc_id != nd.id:
+            raise LintError([f"제출 target id 불일치: 지정 {doc_id} ≠ 문서 frontmatter {nd.id}"])
+        sub = self.store.create_submission(
+            op=op,
+            doc_id=resolved_id,
+            raw_markdown=raw_markdown,
+            intended_diff=intended_diff,
+            change_type=change_type,
+            project=resolved_project,
+            actor=actor,
+            prelint=self._prelint(raw_markdown),
+            now=now_ts,
+        )
+        return {"submission_id": sub["id"], "status": sub["status"],
+                "doc_id": sub["doc_id"], "op": sub["op"],
+                "project": sub["project"], "prelint": sub["prelint"]}
+
+    def list_submissions(
+        self, status: str | None = None, *, project: str | None = None
+    ) -> list[dict]:
+        """승인 대기/처리된 제출 목록(최신 먼저). status·project 로 필터.
+
+        project 미지정(None) 제출은 기본 프로젝트로 취급(문서 coercion 과 동일 — 레거시 제출 노출 보장).
+        """
+        subs = self.store.list_submissions(status)
+        if project is None:
+            return subs
+        default = self.config.default_project
+        return [s for s in subs if (s.get("project") or default) == project]
+
+    def list_projects(self) -> list[str]:
+        """인덱스에 존재하는 project 목록(UI 셀렉터·API용)."""
+        return self.store.list_projects()
+
+    def get_submission(self, sub_id: str) -> dict | None:
+        return self.store.read_submission(sub_id)
+
+    def approve_submission(self, sub_id: str, *, approver: str, now: str | None = None) -> SaveResult:
+        """관리자만 승인 가능. pending 제출을 실제 반영(store.save_document)하고 approved 로 표기.
+
+        lint 실패 시 제출은 pending 유지, 지식 store 는 변경되지 않는다(LintError 전파).
+        """
+        if not self.config.is_admin(approver):
+            raise PermissionError(f"승인 권한 없음: {approver}")
+        now_ts = now or _now()
+        with self.store.submissions_lock():
+            sub = self.store.read_submission(sub_id)
+            if sub is None:
+                raise KeyError(f"제출 없음: {sub_id}")
+            if sub["status"] != "pending":
+                raise ValueError(f"이미 처리된 제출: {sub_id} ({sub['status']})")
+            # 실제 반영 — actor 는 원제출자(프로버넌스 보존). lint 실패 시 예외 전파(pending 유지).
+            res = self._reflect(
+                sub["raw_markdown"],
+                actor=sub["actor"],
+                change_type=sub.get("change_type"),
+                intended_diff=sub.get("intended_diff"),
+                project=sub.get("project"),
+                now=now_ts,
+            )
+            self.store.set_submission_status(
+                sub_id, status="approved", reviewer=approver, note=None, now=now_ts,
+            )
+            return res
+
+    def reject_submission(
+        self, sub_id: str, *, approver: str, note: str = "", now: str | None = None
+    ) -> dict:
+        """관리자만 반려 가능. pending 제출을 rejected 로 표기(반영 없음)."""
+        if not self.config.is_admin(approver):
+            raise PermissionError(f"반려 권한 없음: {approver}")
+        now_ts = now or _now()
+        with self.store.submissions_lock():
+            sub = self.store.read_submission(sub_id)
+            if sub is None:
+                raise KeyError(f"제출 없음: {sub_id}")
+            if sub["status"] != "pending":
+                raise ValueError(f"이미 처리된 제출: {sub_id} ({sub['status']})")
+            return self.store.set_submission_status(
+                sub_id, status="rejected", reviewer=approver, note=note, now=now_ts,
+            )
+
     # ── 읽기 ──────────────────────────────────────────────────────────
     def search_knowledge(
-        self, query: str, filters: dict | None = None, k: int = 10
+        self, query: str, filters: dict | None = None, k: int = 10,
+        *, project: str | None = None,
     ) -> list[dict]:
-        """유사 RAG 검색(필터→FTS→bm25). 결과에 출처(id+anchor)+frontmatter 요약."""
-        # 사용자 자유 입력을 안전한 FTS 질의로 변환(구문 특수문자로 500 나는 것 방지, C6).
-        safe = _fts_safe_query(query)
-        if not safe:
+        """유사 RAG 검색(필터→FTS→bm25). 결과에 출처(id+anchor)+frontmatter 요약.
+
+        project 지정 시 그 프로젝트로 스코프(필터-선행, §2-6). None 이면 전체 프로젝트."""
+        # 자유 입력을 dialect-중립 토큰으로(구문 특수문자로 500 나는 것 방지, C6). 결합은 스토어가.
+        tokens = _query_tokens(query)
+        if not tokens:
             return []
-        hits = self.index.search(safe, filters, k)
+        if project is not None:
+            filters = {**(filters or {}), "project": project}
+        hits = self.store.search(tokens, filters, k, mode="and")
         out: list[dict] = []
         for h in hits:
-            meta = self.index.get_meta(h.doc_id) or {}
+            meta = self.store.get_meta(h.doc_id) or {}
             out.append(
                 {
                     "doc_id": h.doc_id,
@@ -197,14 +387,11 @@ class KnowledgeService:
         return out
 
     def get_document(self, doc_id: str) -> dict | None:
-        """문서 원문 + frontmatter + 앵커 목록. 없으면 None."""
-        meta = self.index.get_meta(doc_id)
-        if not meta or not meta.get("path"):
+        """문서 원문 + frontmatter + 앵커 목록. 없으면 None. (백엔드 중립 조립.)"""
+        raw = self.store.get_raw(doc_id)
+        if raw is None:
             return None
-        p = self.root / meta["path"]
-        if not p.exists():
-            return None
-        nd = normalize(p.read_text(encoding="utf-8"))
+        nd = normalize(raw)
         anchs = [
             {"slug": a.slug, "text": a.text, "level": a.level, "path": a.path}
             for a in anchors_mod.parse_anchors(nd.body)
@@ -214,64 +401,44 @@ class KnowledgeService:
             "type": nd.frontmatter.get("type"),
             "title": nd.frontmatter.get("title"),
             "status": nd.frontmatter.get("status"),
+            "project": nd.frontmatter.get("project") or self.config.default_project,
             "tags": nd.frontmatter.get("tags", []),
             "related": nd.frontmatter.get("related", []),
             "supersedes": nd.frontmatter.get("supersedes"),
             "created": nd.frontmatter.get("created"),
             "updated": nd.frontmatter.get("updated"),
-            "path": meta["path"],
+            "path": (self.store.get_meta(doc_id) or {}).get("path"),
             "body": nd.body,
             "anchors": anchs,
         }
 
     def get_raw(self, doc_id: str) -> str | None:
         """문서의 정규화된 원문(마크다운)을 그대로 반환 — 편집 UI 로 로드용. 없으면 None."""
-        meta = self.index.get_meta(doc_id)
-        if not meta or not meta.get("path"):
-            return None
-        p = self.root / meta["path"]
-        return p.read_text(encoding="utf-8") if p.exists() else None
+        return self.store.get_raw(doc_id)
 
     def list_documents(
-        self, filters: dict | None = None, *, limit: int | None = None, offset: int = 0
+        self, filters: dict | None = None, *, limit: int | None = None, offset: int = 0,
+        project: str | None = None,
     ) -> list[dict]:
-        return self.index.list_documents(filters, limit=limit, offset=offset)
+        """문서 메타 목록. project 지정 시 그 프로젝트로 스코프."""
+        if project is not None:
+            filters = {**(filters or {}), "project": project}
+        return self.store.list_documents(filters, limit=limit, offset=offset)
 
     def get_history(
         self, doc_id: str, *, anchor: str | None = None, limit: int | None = None
     ) -> list[dict]:
         """delta/summary/actor 타임라인(시간순). anchor 필터·limit(최근 N) 지원."""
-        entries = history_mod.read(doc_id, self.root)
+        entries = self.store.read_history(doc_id)
         if anchor is not None:
-            entries = [e for e in entries if e.anchor == anchor]
+            entries = [e for e in entries if e["anchor"] == anchor]
         if limit is not None:
             entries = entries[-limit:]
-        return [
-            {
-                "ts": e.ts,
-                "actor": e.actor,
-                "type": e.type,
-                "anchor": e.anchor,
-                "summary": e.summary,
-                "summary_source": e.summary_source,
-                "delta": e.delta,
-            }
-            for e in entries
-        ]
+        return entries
 
     def get_docs_diff(self, doc_id: str, *, date: str | None = None) -> list[dict]:
         """의도된 변경(docs-diff) 목록. date 지정 시 해당 날짜만."""
-        d = paths.docs_diff_dir(self.root)
-        if not d.exists():
-            return []
-        out: list[dict] = []
-        prefix = f"{doc_id}."
-        for f in sorted(d.glob(f"{doc_id}.*.md")):
-            dt = f.name[len(prefix) : -3]  # '<id>.' 와 '.md' 제거
-            if date is not None and dt != date:
-                continue
-            out.append({"date": dt, "content": f.read_text(encoding="utf-8")})
-        return out
+        return self.store.read_docs_diff(doc_id, date=date)
 
     # ── 계보 (P11) ────────────────────────────────────────────────────
     def get_related(self, doc_id: str) -> dict | None:
@@ -279,7 +446,7 @@ class KnowledgeService:
 
         반환: {id, supersedes[], superseded_by[], related[]}. 문서 없으면 None.
         """
-        if self.index.get_meta(doc_id) is None:
+        if self.store.get_meta(doc_id) is None:
             return None
 
         supersedes, related = self._relation_maps()
@@ -305,12 +472,7 @@ class KnowledgeService:
         """모든 문서의 frontmatter 를 읽어 supersedes/related 인접맵을 만든다."""
         supersedes: dict[str, set] = {}
         related: dict[str, set] = {}
-        for meta in self.index.list_documents():
-            doc_id = meta["id"]
-            p = self.root / meta["path"] if meta.get("path") else None
-            fm = {}
-            if p and p.exists():
-                fm = normalize(p.read_text(encoding="utf-8")).frontmatter
+        for doc_id, fm in self.store.all_frontmatter().items():
             sup = fm.get("supersedes")
             supersedes[doc_id] = (
                 set(sup) if isinstance(sup, list) else ({sup} if sup else set())
@@ -327,36 +489,69 @@ class KnowledgeService:
         actor: str = "ingest",
         doc_type: str = "reference",
         title: str | None = None,
+        project: str | None = None,
         now: str | None = None,
     ) -> SaveResult:
         """소스를 정규화해 save 경유 저장. source 키로 기존 문서를 찾아 **갱신(멱등)**, 없으면 신규.
 
         소스별 실파서(노션/시트)는 기획안2 — 여기선 content(마크다운 본문)를 받는 얇은 어댑터.
+        멱등 조회는 project 로 스코프한다(같은 source_ref 라도 프로젝트가 다르면 별도 문서).
         """
         # source 조회 + 신규 id 채번 + save 를 전역 락으로 감싼다. 동시 신규 ingest 가
         # 같은 id 를 채번해 서로 덮어쓰는 것을 막는다(문서별 락은 동일 id 만 직렬화, C8).
-        with doc_lock(_INGEST_LOCK_ID, self.root, timeout=self.config.lock_timeout):
-            existing = self.index.list_documents(filters={"source": source_ref})
-            if existing:  # 멱등: 같은 source → 기존 문서 갱신
+        scoped = self._resolve_project("", project)  # 빈 md → 인자 or 기본 프로젝트
+        with self.store.ingest_lock():
+            # 승인 대기 제출도 source 조회·id 채번에 참여시킨다. 그렇지 않으면 승인 전 두 소스가
+            # 같은 id 를 받아 나중 승인이 먼저 것을 덮어쓴다(멱등 붕괴, C8 확장).
+            pending = self.store.list_submissions("pending")
+            existing = self.store.list_documents(
+                filters={"source": source_ref, "project": scoped}
+            )
+            pmatch = None if existing else self._pending_by_source(pending, source_ref, scoped)
+            if existing:  # 멱등: 반영된 같은 source(동일 project) → 기존 문서 갱신
                 meta = existing[0]
                 doc_id = meta["id"]
                 doc_type = meta["type"]
-                prev = normalize((self.root / meta["path"]).read_text(encoding="utf-8"))
-                created = prev.frontmatter.get("created", "")
-            else:  # 신규
-                doc_id = self._next_id(_prefix_for(doc_type))
+                created = normalize(self.store.get_raw(doc_id) or "").frontmatter.get("created", "")
+            elif pmatch:  # 멱등: 대기 중 같은 source → 그 문서 id 로 갱신(중복 채번 방지)
+                doc_id = pmatch["doc_id"]
+                pfm = normalize(pmatch.get("raw_markdown") or "").frontmatter
+                doc_type = pfm.get("type", doc_type)
+                created = pfm.get("created", "") or (now or _today())[:10]
+            else:  # 신규 — 반영 문서 + 대기 제출 id 를 모두 피해 채번
+                doc_id = self._next_id(
+                    _prefix_for(doc_type), extra_ids={s["doc_id"] for s in pending}
+                )
                 created = (now or _today())[:10]
 
             md = _build_ingest_markdown(
                 doc_id, doc_type, title or source_ref, created, source_ref, content
             )
-            return self.save_document(md, actor=actor, change_type="ingest", now=now)
+            return self.save_document(
+                md, actor=actor, change_type="ingest", project=scoped, now=now
+            )
 
-    def _next_id(self, prefix: str) -> str:
-        """`prefix-NNNN` 형식의 다음 유일 id (기존 최대 번호 +1). _INGEST_LOCK_ID 하에서 호출."""
+    def _next_id(self, prefix: str, *, extra_ids=None) -> str:
+        """`prefix-NNNN` 형식의 다음 유일 id (기존 최대 번호 +1). ingest_lock 하에서 호출.
+
+        extra_ids: 반영 전이라 인덱스에 없지만 이미 예약된 id(승인 대기 제출 등)도 회피 대상에 포함."""
         pat = re.compile(rf"^{re.escape(prefix)}-(\d{{4}})$")
-        nums = [int(m.group(1)) for i in self.index.all_doc_ids() if (m := pat.match(i))]
+        ids = list(self.store.all_doc_ids()) + list(extra_ids or [])
+        nums = [int(m.group(1)) for i in ids if (m := pat.match(i))]
         return f"{prefix}-{(max(nums) + 1) if nums else 1:04d}"
+
+    def _pending_by_source(self, pending: list[dict], source_ref: str, project: str) -> dict | None:
+        """대기 중 제출에서 같은 source·project 를 찾아 반환(멱등 갱신 대상). 없으면 None."""
+        for s in pending:
+            if (s.get("project") or self.config.default_project) != project:
+                continue
+            try:
+                fm = normalize(s.get("raw_markdown") or "").frontmatter
+            except Exception:
+                continue
+            if fm.get("source") == source_ref:
+                return s
+        return None
 
     # ── curate (P12) — 옵션, LLM 미구성 시 graceful skip (기획안1 §8) ──
     def curate(self, query: str, candidate_ids: list[str], *, llm=None) -> dict:
@@ -388,8 +583,10 @@ class KnowledgeService:
         *,
         llm=None,
         related_k: int = 3,
+        project: str | None = None,
     ) -> dict:
         """소스 → LLM 초안(마크다운). **저장하지 않는다.** lint 를 미리 돌려 함께 반환.
+        project 지정 시 관련 ADR 수집을 그 프로젝트로 스코프.
 
         반환: {draft_markdown, lint:{ok,reasons}, used_sources[], related_context[]}.
         LLM 미구성 시 LLMUnavailable (엔드포인트가 503 으로 매핑, 직접 작성은 항상 가능).
@@ -415,13 +612,14 @@ class KnowledgeService:
 
         # 2. 관련 기존 ADR 자동 수집 (유사 RAG, 벡터 없음).
         #    힌트/소스 키워드를 OR 로 묶어 넓게 후보를 잡는다(암묵 AND 로 0건 되는 것 방지).
-        query = _related_query(hint, sources or [])  # 이미 안전한 \w 토큰의 OR 질의
+        rel_tokens = _related_tokens(hint, sources or [])  # \w 토큰(len≥2, dedup, 상한)
         related_ids: list[str] = []
-        if query:
-            # 자체 OR 질의라 index.search 를 직접 호출(search_knowledge 의 토큰 재조합을 우회).
-            hits = self.index.search(
-                query, {"type": "adr", "status": "accepted"}, k=related_k * 3
-            )
+        if rel_tokens:
+            # OR 모드로 넓게 후보 수집(암묵 AND 로 0건 되는 것 방지).
+            rel_filters = {"type": "adr", "status": "accepted"}
+            if project is not None:
+                rel_filters["project"] = project
+            hits = self.store.search(rel_tokens, rel_filters, k=related_k * 3, mode="or")
             for h in hits:
                 if h.doc_id not in used and h.doc_id not in related_ids:
                     related_ids.append(h.doc_id)
@@ -447,13 +645,77 @@ class KnowledgeService:
             "related_context": related_ids,
         }
 
+    # ── 멀티턴 AI 생성 (구현스펙-멀티턴생성-펑션콜.md) ─────────────────
+    def chat_turn(
+        self,
+        session_id: str | None,
+        user_message: str,
+        *,
+        actor: str = "anonymous",
+        target_type: str = "adr",
+        project: str | None = None,
+        llm=None,
+    ) -> dict:
+        """대화 1턴 → {session_id, reply, staged}. LLM 미구성 시 LLMUnavailable(503 매핑).
+        project 는 세션에 저장돼 읽기 도구·제안이 그 프로젝트로 스코프된다."""
+        client = llm if llm is not None else self._llm_client()
+        if not client.available:
+            raise LLMUnavailable("LLM 미구성 — 멀티턴 채팅 비활성")
+        return self._orchestrator().turn(
+            session_id, user_message, actor=actor, target_type=target_type,
+            project=project, llm=client,
+        )
+
+    def chat_turn_stream(
+        self,
+        session_id: str | None,
+        user_message: str,
+        *,
+        actor: str = "anonymous",
+        target_type: str = "adr",
+        project: str | None = None,
+        llm=None,
+    ):
+        """대화 1턴을 스트리밍(제너레이터). 도구 해결(stream=False) 후 최종 답변을 stream=True 로.
+
+        이벤트 dict 를 yield: session/tool/token/done. LLM 미구성 시 LLMUnavailable(첫 소비 시 전파).
+        """
+        client = llm if llm is not None else self._llm_client()
+        if not client.available:
+            raise LLMUnavailable("LLM 미구성 — 멀티턴 채팅 비활성")
+        return self._orchestrator().turn_stream(
+            session_id, user_message, actor=actor, target_type=target_type,
+            project=project, llm=client,
+        )
+
+    @property
+    def llm_available(self) -> bool:
+        """LLM 구성 여부(스트리밍 엔드포인트가 사전 503 가드에 사용)."""
+        return self._llm_client().available
+
+    def get_session(self, session_id: str) -> dict | None:
+        """세션 상태(messages/staged 등). 없으면 None."""
+        return self._orchestrator().get(session_id)
+
+    def apply_session(self, session_id: str, *, actor: str) -> list[dict]:
+        """세션의 staged 변경을 승인 큐에 제출(submit_change). 반환: 제출 목록."""
+        return self._orchestrator().apply(session_id, actor=actor)
+
+    def read_template(self, target_type: str) -> str:
+        """타입별 스캐폴드 템플릿 원문(멀티턴 도구 get_template 위임). 없으면 빈 문자열."""
+        return _read_template(target_type)
+
+    def lint_markdown(self, markdown: str) -> dict:
+        """초안을 lint 게이트에 미리 통과시켜 결과 반환(멀티턴 도구 lint_check 위임)."""
+        return self._prelint(markdown)
+
     def _prelint(self, draft: str) -> dict:
         try:
             nd = normalize(draft)
         except yaml.YAMLError as e:
             return {"ok": False, "reasons": [f"frontmatter YAML 파싱 실패: {e}"]}
         try:
-            lint(nd, self.config, exists_fn=self.index.exists)
+            lint(nd, self.config, exists_fn=self.store.exists)
             return {"ok": True, "reasons": []}
         except LintError as e:
             return {"ok": False, "reasons": e.reasons}

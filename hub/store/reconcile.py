@@ -28,7 +28,7 @@ def run(root, config: Config | None = None, index=None) -> dict:
     root = Path(root)
     owns_index = index is None
     if owns_index:
-        index = open_index(root)
+        index = open_index(root, default_project=config.default_project)
 
     result = {
         "reindexed": 0,
@@ -62,7 +62,7 @@ def run(root, config: Config | None = None, index=None) -> dict:
                 seen.add(doc_id)
                 body_hash = _sha(nd.body)
                 rel_path = str(f.relative_to(root))
-                doc = to_document(nd)
+                doc = to_document(nd, default_project=config.default_project)
 
                 # 본문 해시 OR 메타/경로가 다르면 재색인(메타-only 변경도 수렴, C5).
                 meta = index.get_meta(doc_id)

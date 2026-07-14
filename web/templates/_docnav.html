@@ -1,6 +1,7 @@
 <div class="doc-head">
   <h1>{{ doc.title }}</h1>
   <div class="meta muted">
+    {% if doc.project %}<span class="badge" title="프로젝트">📁 {{ doc.project }}</span>{% endif %}
     <span class="badge">{{ doc.type }}</span>
     <span class="badge">{{ doc.status }}</span>
     <span class="mono">{{ doc.id }}</span>

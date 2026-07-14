@@ -152,8 +152,11 @@ def _save_locked(nd, doc_type, actor, change_type_arg, intended_diff, now_ts, ro
             diff_path.write_text(intended_diff, encoding="utf-8")
             journal.step(doc_id, root, j, "docs-diff")
 
-        # 12. FTS 재색인
-        index.reindex_doc(to_document(nd), path=rel_path, body_hash=_sha(nd.body))
+        # 12. FTS 재색인 (project 미지정 시 index.default_project 로 보정)
+        index.reindex_doc(
+            to_document(nd, default_project=getattr(index, "default_project", None)),
+            path=rel_path, body_hash=_sha(nd.body),
+        )
         journal.step(doc_id, root, j, "index")
 
         # 13. 저널 커밋
@@ -217,11 +220,16 @@ def _rollback(doc_id, root, index, prev, doc_path, hist_path, snap_p, snap_h) ->
     else:
         pnd = normalize(prev["doc"])
         rel = str(paths.doc_path(root, doc_id, pnd.type).relative_to(root))
-        index.reindex_doc(to_document(pnd), path=rel, body_hash=_sha(pnd.body))
+        index.reindex_doc(
+            to_document(pnd, default_project=getattr(index, "default_project", None)),
+            path=rel, body_hash=_sha(pnd.body),
+        )
 
 
-def to_document(nd: NormalizedDoc) -> Document:
-    """정규화 결과 → Document 값 객체 (색인용)."""
+def to_document(nd: NormalizedDoc, *, default_project: str | None = None) -> Document:
+    """정규화 결과 → Document 값 객체 (색인용).
+
+    project 는 frontmatter 가 원천이며, 없으면 default_project 로 보정(미지정=기본 프로젝트)."""
     fm = nd.frontmatter
     return Document(
         id=fm.get("id"),
@@ -233,6 +241,7 @@ def to_document(nd: NormalizedDoc) -> Document:
         updated=fm.get("updated"),
         author=fm.get("author"),
         source=fm.get("source"),
+        project=fm.get("project") or default_project,
         tags=fm.get("tags") or [],
         related=fm.get("related") or [],
         supersedes=fm.get("supersedes"),

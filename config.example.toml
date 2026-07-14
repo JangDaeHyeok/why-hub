@@ -4,6 +4,21 @@
 repo_root = "knowledge"
 lock_timeout = 10.0
 
+# 멀티프로젝트: project 미지정 문서가 속하는 기본 프로젝트. 검색/목록은 ?project=... 로 스코프.
+default_project = "why-hub"
+
+# 저장 백엔드. backend="file"(기본·로컬/테스트: 파일+SQLite FTS5) | "postgres"(배포).
+# postgres 는 문서·이력·스냅샷·제출·FTS 를 모두 PostgreSQL 에 둔다(트랜잭션 ACID). 비밀번호는 env(password_env).
+[storage]
+backend = "file"
+[storage.postgres]
+# dsn = "postgresql://hub:pw@localhost:5432/knowledge_hub"   # dsn 주면 아래 host/port 무시
+host = "localhost"
+port = 5432
+database = "knowledge_hub"
+user = "hub"
+password_env = "PGPASSWORD"
+
 # 타입별 id 정규식 (기본: 모든 타입 "^[a-z]+-[0-9]{4}$")
 # 주의: 정규식과 별개로 lint 가 경로 구분자('/', '\', '..')를 항상 거부한다(traversal 차단).
 # 그래도 패턴 자체를 경로 안전 문자로 좁히는 것을 권장한다.
@@ -15,8 +30,15 @@ design-intent = "^di-[a-z0-9-]+$"   # 예: di-2026-07-billing
 [section_aliases]
 "결과" = ["결과", "결과 및 영향", "영향"]
 
-# OpenAI 호환 LLM (curate·요약·AI 생성). 호스팅 API 로 시작 — 미구성 시 관련 기능 graceful skip.
+# OpenAI 호환 LLM (curate·요약·AI 생성·멀티턴 채팅). 호스팅 API 로 시작 — 미구성 시 관련 기능 graceful skip.
 [llm]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
 api_key_env = "OPENAI_API_KEY"
+
+# 관리자 승인 워크플로우 (구현스펙-승인워크플로우.md).
+# enabled=true 면 모든 쓰기(수동·AI 적용·ingest)가 승인 대기 큐를 거치고, admins 목록의 actor 만 승인/반려할 수 있다.
+# enabled=false 면 기존처럼 즉시 반영(하위호환·seed).
+[approval]
+enabled = true
+admins = ["alice", "bob"]

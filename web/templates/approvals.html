@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}승인함 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content">
+    <h1>승인함 <span class="muted">(대기 {{ subs|length }}건)</span></h1>
+    <p class="muted">모든 쓰기는 승인 대기 큐를 거칩니다. <strong>관리자(config admins)</strong>만 승인·반려할 수 있습니다.
+      승인 시 실제 save 게이트(정규화·lint·delta·재색인)가 실행됩니다.</p>
+
+    {% if error %}<div class="banner banner-danger">{{ error }}</div>{% endif %}
+    {% if message %}<div class="banner banner-success">{{ message }}</div>{% endif %}
+
+    {% if not subs %}
+    <p class="muted">대기 중인 제출이 없습니다.</p>
+    {% endif %}
+
+    {% for s in subs %}
+    <div class="card" style="margin-bottom: var(--space-3)">
+      <div>
+        {% if s.project %}<span class="badge" title="프로젝트">📁 {{ s.project }}</span>{% endif %}
+        <span class="badge">{{ s.op }}</span>
+        <strong>{{ s.doc_id }}</strong>
+        <span class="muted">· 제출자 {{ s.actor }} · {{ s.created }}</span>
+      </div>
+      {% if not s.prelint.ok %}
+      <div class="banner banner-warning" style="margin: var(--space-2) 0">
+        제출 시 lint 경고: {{ s.prelint.reasons|join(', ') }}
+        <br><span class="muted">(승인 시 정식 lint 가 다시 검증하며, 실패하면 반영되지 않고 대기 유지됩니다.)</span>
+      </div>
+      {% endif %}
+      <details style="margin: var(--space-2) 0">
+        <summary class="muted">제출 내용 보기</summary>
+        <pre class="field mono" style="white-space: pre-wrap">{{ s.raw_markdown }}</pre>
+      </details>
+      <div style="display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: flex-end">
+        <form method="post" action="/ui/approvals/{{ s.id }}/approve" style="margin: 0">
+          <input class="field" type="text" name="approver" value="{{ reviewer }}"
+                 placeholder="검토자(actor)" style="width: 12rem">
+          <button class="btn btn-primary" type="submit">승인</button>
+        </form>
+        <form method="post" action="/ui/approvals/{{ s.id }}/reject" style="margin: 0">
+          <input class="field" type="text" name="approver" value="{{ reviewer }}"
+                 placeholder="검토자(actor)" style="width: 10rem">
+          <input class="field" type="text" name="note" placeholder="반려 사유(선택)" style="width: 14rem">
+          <button class="btn" type="submit">반려</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

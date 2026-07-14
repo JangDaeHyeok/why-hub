@@ -44,9 +44,11 @@ def _sha(body: str) -> str:
 class Index:
     """FTS5 인덱스 핸들. 문서 단위 경쟁은 파일 락(P05)이 막고, FTS 쓰기는 SQLite 가 직렬화."""
 
-    def __init__(self, db_path):
+    def __init__(self, db_path, *, default_project: str | None = None):
         from pathlib import Path
 
+        # 미지정(NULL) project 를 이 값으로 취급(멀티프로젝트). 쓰기 coercion·기존 행 보정에 사용.
+        self.default_project = default_project
         p = Path(db_path)
         p.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(p), check_same_thread=False)
@@ -59,6 +61,13 @@ class Index:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA busy_timeout=5000")  # 동시 save 시 일시적 락 대기
         self.conn.executescript(_SCHEMA)
+        # 마이그레이션: 기존 NULL project 행을 기본 프로젝트로 보정(멱등 — 다음 open 시 0건).
+        if self.default_project:
+            with self._lock, self.conn:
+                self.conn.execute(
+                    "UPDATE documents SET project=? WHERE project IS NULL",
+                    (self.default_project,),
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -75,17 +84,19 @@ class Index:
         tags_json = json.dumps(doc.tags or [], ensure_ascii=False)
 
         with self._lock, self.conn:  # 스레드 직렬화 + 트랜잭션
+            project = doc.project or self.default_project
             self.conn.execute(
                 """INSERT INTO documents
                      (id, type, status, title, path, tags, source, updated,
                       project, tenant, body_hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                    ON CONFLICT(id) DO UPDATE SET
                      type=excluded.type, status=excluded.status, title=excluded.title,
                      path=excluded.path, tags=excluded.tags, source=excluded.source,
-                     updated=excluded.updated, body_hash=excluded.body_hash""",
+                     updated=excluded.updated, project=excluded.project,
+                     body_hash=excluded.body_hash""",
                 (doc.id, doc.type, doc.status, doc.title, path, tags_json,
-                 doc.source, doc.updated, body_hash),
+                 doc.source, doc.updated, project, body_hash),
             )
             # 기존 섹션 삭제 후 앵커별 재삽입 (중복 방지).
             self.conn.execute("DELETE FROM chunks_fts WHERE doc_id=?", (doc.id,))
@@ -168,6 +179,17 @@ class Index:
         with self._lock:
             return [r[0] for r in self.conn.execute("SELECT id FROM documents")]
 
+    def list_projects(self) -> list[str]:
+        """인덱스에 존재하는 project 목록(중복 제거, NULL 제외) — UI 셀렉터용."""
+        with self._lock:
+            return [
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT DISTINCT project FROM documents "
+                    "WHERE project IS NOT NULL ORDER BY project"
+                )
+            ]
+
     def list_documents(
         self, filters: dict | None = None, *, limit: int | None = None, offset: int = 0
     ) -> list[dict]:
@@ -233,8 +255,8 @@ class Index:
         return meta
 
 
-def open_index(root) -> Index:
-    """저장소 루트의 index.sqlite 를 연다."""
+def open_index(root, *, default_project: str | None = None) -> Index:
+    """저장소 루트의 index.sqlite 를 연다. default_project 지정 시 NULL project 를 그 값으로 취급."""
     from . import paths
 
-    return Index(paths.index_path(root))
+    return Index(paths.index_path(root), default_project=default_project)

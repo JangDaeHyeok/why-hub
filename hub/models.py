@@ -35,6 +35,7 @@ class Document:
     updated: str | None = None
     author: str | None = None
     source: str | None = None
+    project: str | None = None
     tags: list[str] = field(default_factory=list)
     related: list[str] = field(default_factory=list)
     supersedes: str | None = None

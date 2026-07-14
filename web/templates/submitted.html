@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}제출됨 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content">
+    <h1>제출됨 — 승인 대기</h1>
+    <div class="banner banner-success">
+      변경이 승인 대기 큐에 제출되었습니다. <strong>관리자 승인</strong> 후 반영됩니다.
+    </div>
+    <ul>
+      <li>제출 ID: <strong>{{ submission_id }}</strong></li>
+      <li>문서: {{ doc_id }} · 동작 [{{ op }}]{% if project %} · 프로젝트 📁 {{ project }}{% endif %}</li>
+      <li>제출 lint: {{ 'OK' if prelint.ok else ('경고 — ' ~ prelint.reasons|join(', ')) }}</li>
+    </ul>
+    <div style="margin-top: var(--space-3)">
+      <a class="btn btn-primary" href="/ui/approvals">승인함으로</a>
+      <a class="btn" href="/">홈</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

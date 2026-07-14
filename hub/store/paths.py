@@ -26,6 +26,7 @@ DOCS_DIFF_DIR = "docs-diff"
 HISTORY_DIR = "history"
 LOCKS_DIR = ".locks"
 JOURNAL_DIR = ".journal"
+SUBMISSIONS_DIR = ".submissions"
 INDEX_FILE = "index.sqlite"
 
 
@@ -96,6 +97,15 @@ def journal_dir(base: str | Path) -> Path:
 def journal_path(base: str | Path, doc_id: str) -> Path:
     """save 저널 경로: .journal/<id>.json"""
     return journal_dir(base) / f"{doc_id}.json"
+
+
+def submissions_dir(base: str | Path) -> Path:
+    return root(base) / SUBMISSIONS_DIR
+
+
+def submission_path(base: str | Path, sub_id: str) -> Path:
+    """승인 대기 제출 경로: .submissions/<sub_id>.json (지식 콘텐츠 아님 — 임시 워크플로우 메타)."""
+    return submissions_dir(base) / f"{sub_id}.json"
 
 
 def all_dirs(base: str | Path) -> list[Path]:

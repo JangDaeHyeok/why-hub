@@ -20,7 +20,7 @@ import yaml
 
 # frontmatter 재직렬화 순서 (models.Document 필드 순서와 정렬).
 _FM_ORDER = [
-    "id", "type", "title", "status", "tags", "related",
+    "id", "type", "title", "status", "project", "tags", "related",
     "supersedes", "source", "author", "created", "updated",
 ]
 

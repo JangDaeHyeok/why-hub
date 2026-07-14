@@ -8,6 +8,7 @@ python-multipart  # 쓰기/생성 UI 폼 파싱 (M7·M8)
 pyyaml     # frontmatter/이력 YAML (P02~)
 httpx      # HTTP 테스트 (P08)
 openai     # OpenAI 호환 LLM 클라이언트 (P12)
+psycopg[binary]  # PostgreSQL 저장 백엔드 (배포 — storage.backend=postgres)
 
 # 개발
 pytest>=8

@@ -15,8 +15,22 @@
     <header class="topbar">
       <a class="brand" href="/">지식 허브</a>
       <span class="muted">Why 중심 · 유사 RAG</span>
+      {% set cur = request.cookies.get('__project') %}
+      <form method="post" action="/ui/project" style="display:inline-flex; gap:4px; align-items:center; margin-left: var(--space-3)">
+        <span class="muted" title="현재 프로젝트">📁</span>
+        <input class="field" name="project" list="__proj-list" style="width:9rem; padding:2px 6px"
+               value="{{ '' if cur == '__all__' else (cur or default_project) }}"
+               placeholder="프로젝트" title="프로젝트 전환(자유 입력 가능)">
+        <datalist id="__proj-list">
+          {% for p in all_projects() %}<option value="{{ p }}">{% endfor %}
+        </datalist>
+        <button class="btn" type="submit" title="전환">전환</button>
+        <button class="btn" type="submit" name="project" value="__all__" title="전체 프로젝트">전체</button>
+      </form>
       <span class="spacer"></span>
+      <a class="btn" href="/ui/chat">💬 AI 채팅</a>
       <a class="btn" href="/ui/generate">✨ AI 생성</a>
+      <a class="btn" href="/ui/approvals">📥 승인함</a>
       <a class="btn" href="/ui/new">+ 새 문서</a>
       <button class="theme-toggle" onclick="__toggleTheme()" title="테마 전환" aria-label="테마 전환">◐</button>
     </header>

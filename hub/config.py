@@ -42,6 +42,46 @@ class LLMConfig:
 
 
 @dataclass
+class PostgresConfig:
+    """PostgreSQL 접속 (배포 백엔드). dsn 우선, 없으면 host/port/... 로 조립. 비밀번호는 env 에서."""
+
+    dsn: str | None = None
+    host: str = "localhost"
+    port: int = 5432
+    database: str = "knowledge_hub"
+    user: str = "hub"
+    password_env: str = "PGPASSWORD"
+
+    def resolve_dsn(self) -> str:
+        import os
+        from urllib.parse import quote
+
+        if self.dsn:
+            return self.dsn
+        pw = os.environ.get(self.password_env, "")
+        # URI 예약문자(@ / # % : 등)가 user/password/db 에 있어도 안전하도록 각 컴포넌트를 인코딩.
+        user = quote(self.user, safe="")
+        db = quote(self.database, safe="")
+        auth = f"{user}:{quote(pw, safe='')}@" if pw else f"{user}@"
+        return f"postgresql://{auth}{self.host}:{self.port}/{db}"
+
+
+@dataclass
+class ApprovalConfig:
+    """관리자 승인 워크플로우 설정 (구현스펙-승인워크플로우.md).
+
+    enabled=True 면 모든 쓰기(수동·AI·ingest)가 승인 대기 큐를 거친다. admins 목록의
+    actor 만 승인/반려할 수 있다. enabled=False 면 기존처럼 즉시 반영(하위호환·seed·store 테스트).
+
+    **코드 기본값은 False**(opt-in) — 기존 동작·시드·단위 테스트를 깨지 않는다. 팀 배포는
+    config.example.toml 처럼 `[approval] enabled = true` + admins 로 켠다.
+    """
+
+    enabled: bool = False
+    admins: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     """지식 허브 런타임 설정."""
 
@@ -54,11 +94,21 @@ class Config:
     )
     adr_required_sections: tuple[str, ...] = ADR_REQUIRED_SECTIONS
     lock_timeout: float = 10.0
+    # 멀티프로젝트: project 미지정(frontmatter 없음/인덱스 NULL) 문서가 속하는 기본 프로젝트.
+    default_project: str = "default"
+    # 저장 백엔드: "file"(기본 · 로컬/테스트) | "postgres"(배포).
+    storage: str = "file"
+    postgres: PostgresConfig = field(default_factory=PostgresConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    approval: ApprovalConfig = field(default_factory=ApprovalConfig)
 
     def id_pattern(self, doc_type: str) -> str:
         """해당 타입의 id 정규식. 미정의 타입은 기본 패턴으로 폴백."""
         return self.id_patterns.get(doc_type, r"^[a-z]+-[0-9]{4}$")
+
+    def is_admin(self, actor: str | None) -> bool:
+        """actor 가 승인 권한을 가진 관리자인지. (신원은 신뢰 기반 — 현 MVP 수준.)"""
+        return bool(actor) and actor in self.approval.admins
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
@@ -77,6 +127,20 @@ class Config:
             cfg.repo_root = Path(data["repo_root"])
         if "lock_timeout" in data:
             cfg.lock_timeout = float(data["lock_timeout"])
+        if "default_project" in data:
+            cfg.default_project = str(data["default_project"])
+        if "storage" in data:
+            st = data["storage"]
+            cfg.storage = str(st.get("backend", cfg.storage))
+            pg = st.get("postgres", {})
+            cfg.postgres = PostgresConfig(
+                dsn=pg.get("dsn"),
+                host=pg.get("host", "localhost"),
+                port=int(pg.get("port", 5432)),
+                database=pg.get("database", "knowledge_hub"),
+                user=pg.get("user", "hub"),
+                password_env=pg.get("password_env", "PGPASSWORD"),
+            )
         if "id_patterns" in data:
             cfg.id_patterns.update(data["id_patterns"])
         if "section_aliases" in data:
@@ -90,4 +154,23 @@ class Config:
                 model=llm.get("model"),
                 api_key_env=llm.get("api_key_env", "OPENAI_API_KEY"),
             )
+        if "approval" in data:
+            appr = data["approval"]
+            cfg.approval = ApprovalConfig(
+                enabled=bool(appr.get("enabled", True)),
+                admins=list(appr.get("admins", [])),
+            )
         return cfg
+
+    @classmethod
+    def load_default(cls) -> "Config":
+        """엔트리포인트용 기본 로드: `KNOWLEDGE_HUB_CONFIG` env → 없으면 `./config.toml` → 없으면 기본값.
+
+        (멀티프로젝트·승인 등 config 기반 기능이 서버 구동 시 실제 반영되도록 한다.)
+        """
+        import os
+
+        path = os.environ.get("KNOWLEDGE_HUB_CONFIG")
+        if not path and Path("config.toml").exists():
+            path = "config.toml"
+        return cls.load(path)
