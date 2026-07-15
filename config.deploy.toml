@@ -1,5 +1,5 @@
 # 배포용 설정 (docker-compose 가 마운트). 모든 상태를 PostgreSQL 에.
-# 비밀번호는 PGPASSWORD env, OpenAI 키는 OPENAI_API_KEY env 로 주입.
+# 비밀번호는 PGPASSWORD env 로 주입. LLM 엔드포인트는 공개 URL — 별도 키 불필요.
 
 default_project = "why-hub"
 
@@ -16,10 +16,10 @@ database = "knowledge_hub"
 user = "hub"
 password_env = "PGPASSWORD"
 
+# 엔드포인트 URL 은 compose 가 env(KNOWLEDGE_HUB_LLM_COMPLETE_URL / _STREAM_URL)로 주입한다 — .env 참고.
 [llm]
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"
+effort = "high"   # low | high
+max_tokens = 4096
 
 [approval]
 enabled = true

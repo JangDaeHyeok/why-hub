@@ -34,11 +34,16 @@ ADR_REQUIRED_SECTIONS = ("배경", "결정", "근거", "대안", "결과")
 
 @dataclass
 class LLMConfig:
-    """OpenAI 호환 클라이언트 설정 (curate·요약·AI 생성). 옵션 — 미구성 시 graceful skip."""
+    """LLM 엔드포인트 설정 (curate·요약·AI 생성·멀티턴 채팅). 옵션 — 미구성 시 graceful skip.
 
-    base_url: str | None = None
-    model: str | None = None
-    api_key_env: str = "OPENAI_API_KEY"
+    커스텀 HTTP 엔드포인트(Anthropic Messages 스타일 · 스트리밍/논스트리밍 2종)를 호출한다.
+    공개 URL 이라 api key 불필요. 네이티브 펑션콜은 없고 — 툴 사용은 프롬프트 shim(llm.py)로 흡수한다.
+    """
+
+    complete_url: str | None = None  # 논스트리밍 엔드포인트 (complete·chat)
+    stream_url: str | None = None    # 스트리밍 엔드포인트 (chat_stream, SSE)
+    effort: str = "high"             # low | high (엔드포인트 default high)
+    max_tokens: int = 4096
 
 
 @dataclass
@@ -150,9 +155,10 @@ class Config:
         if "llm" in data:
             llm = data["llm"]
             cfg.llm = LLMConfig(
-                base_url=llm.get("base_url"),
-                model=llm.get("model"),
-                api_key_env=llm.get("api_key_env", "OPENAI_API_KEY"),
+                complete_url=llm.get("complete_url"),
+                stream_url=llm.get("stream_url"),
+                effort=str(llm.get("effort", "high")),
+                max_tokens=int(llm.get("max_tokens", 4096)),
             )
         if "approval" in data:
             appr = data["approval"]
@@ -173,4 +179,14 @@ class Config:
         path = os.environ.get("KNOWLEDGE_HUB_CONFIG")
         if not path and Path("config.toml").exists():
             path = "config.toml"
-        return cls.load(path)
+        cfg = cls.load(path)
+
+        # LLM 엔드포인트 URL 은 인증 없는 공개 URL(=시크릿성)이라 git 커밋 config 에 두지 않고
+        # 환경변수로 주입한다. env 가 있으면 파일 값을 덮어쓴다(env 우선, 없으면 파일값/미구성).
+        complete = os.environ.get("KNOWLEDGE_HUB_LLM_COMPLETE_URL")
+        stream = os.environ.get("KNOWLEDGE_HUB_LLM_STREAM_URL")
+        if complete:
+            cfg.llm.complete_url = complete
+        if stream:
+            cfg.llm.stream_url = stream
+        return cfg

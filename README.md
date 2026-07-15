@@ -38,7 +38,11 @@ ADR(아키텍처 결정 기록), 설계 의도, 컨벤션 가이드처럼 **"우
 # 1) 의존성 설치 (Python 3.11+)
 pip install -e .
 
-# 2) 웹 관리 서버 실행 → http://127.0.0.1:8000
+# 2) (선택) AI 기능용 LLM 엔드포인트 URL 을 환경변수로 주입 — 미설정 시 AI 기능만 건너뜁니다.
+export KNOWLEDGE_HUB_LLM_COMPLETE_URL="https://<논스트리밍-엔드포인트>"
+export KNOWLEDGE_HUB_LLM_STREAM_URL="https://<스트리밍-엔드포인트>"
+
+# 3) 웹 관리 서버 실행 → http://127.0.0.1:8000
 python -m hub.interfaces.web
 
 # 3) (선택) MCP 서버 실행 — AI 에이전트 접근용
@@ -51,8 +55,12 @@ python -m hub.interfaces.http_api
 브라우저에서 `http://127.0.0.1:8000` 을 열면 문서 목록 · 검색 · 작성 · AI 생성 · 승인함을 사용할 수 있습니다.
 
 > **설정**은 작업 디렉토리의 `config.toml`(또는 `KNOWLEDGE_HUB_CONFIG` 환경변수)에서 읽습니다.
-> 예시는 [`config.example.toml`](config.example.toml)을 참고하세요. AI 기능을 쓰려면 `OPENAI_API_KEY`를 설정합니다
-> (미설정 시 AI 관련 기능만 자동으로 건너뜁니다).
+> 예시는 [`config.example.toml`](config.example.toml)을 참고하세요.
+> AI 기능(검색 요약·초안 생성·멀티턴 채팅)의 **LLM 엔드포인트 URL은 인증 없는 공개 URL(=시크릿성)이라
+> git에 커밋하지 않고 환경변수로 주입**합니다 — `KNOWLEDGE_HUB_LLM_COMPLETE_URL`(논스트리밍) ·
+> `KNOWLEDGE_HUB_LLM_STREAM_URL`(스트리밍). 템플릿은 [`.env.example`](.env.example)을 복사해 `.env`로 두면
+> 됩니다(`.env`는 git 무시). 미설정 시 AI 관련 기능만 자동으로 건너뜁니다. `effort`/`max_tokens`는 비시크릿
+> 튜닝값이라 `config.toml`의 `[llm]`에 둡니다.
 
 ### 예제 데이터 넣어보기
 
@@ -67,7 +75,8 @@ python scripts/seed_knowledge.py    # 템플릿·샘플 문서 시드
 배포 시에는 모든 상태를 **PostgreSQL**에 저장합니다(문서·이력·스냅샷·제출·FTS). 트랜잭션으로 안전하게 직렬화됩니다.
 
 ```bash
-# 비밀·키는 환경변수로 전달 (PGPASSWORD, OPENAI_API_KEY)
+# 시크릿·엔드포인트는 .env 로 주입 (docker compose 가 자동 로드). .env.example 을 복사해 채웁니다.
+cp .env.example .env   # KNOWLEDGE_HUB_LLM_*_URL, PGPASSWORD 를 채운다 (.env 는 git 무시)
 docker compose up --build
 #   → postgres + admin(웹 UI, :8000) + mcp(streamable-http, :8001)
 

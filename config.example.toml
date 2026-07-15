@@ -30,11 +30,14 @@ design-intent = "^di-[a-z0-9-]+$"   # 예: di-2026-07-billing
 [section_aliases]
 "결과" = ["결과", "결과 및 영향", "영향"]
 
-# OpenAI 호환 LLM (curate·요약·AI 생성·멀티턴 채팅). 호스팅 API 로 시작 — 미구성 시 관련 기능 graceful skip.
+# LLM 엔드포인트 (curate·요약·AI 생성·멀티턴 채팅). Anthropic 스타일 · 스트리밍/논스트리밍 2종.
+# 엔드포인트 URL 은 인증 없는 공개 URL(=시크릿성)이라 config 에 두지 않고 환경변수로 주입한다:
+#   KNOWLEDGE_HUB_LLM_COMPLETE_URL / KNOWLEDGE_HUB_LLM_STREAM_URL  (예: .env — .env.example 참고)
+# 미설정 시 AI 관련 기능만 자동 graceful skip. 네이티브 펑션콜은 없고 멀티턴 도구 루프는
+# 프롬프트 shim(hub/llm.py)으로 흡수한다. effort/max_tokens 는 비시크릿 튜닝값이라 여기 둔다.
 [llm]
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"
+effort = "high"   # low | high (엔드포인트 default high)
+max_tokens = 4096
 
 # 관리자 승인 워크플로우 (구현스펙-승인워크플로우.md).
 # enabled=true 면 모든 쓰기(수동·AI 적용·ingest)가 승인 대기 큐를 거치고, admins 목록의 actor 만 승인/반려할 수 있다.

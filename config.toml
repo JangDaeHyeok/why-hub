@@ -12,11 +12,14 @@ default_project = "why-hub"
 adr = "^adr-[0-9]{4}$"
 design-intent = "^di-[a-z0-9-]+$"
 
-# OpenAI 호환 LLM (curate·요약·AI 생성·멀티턴 채팅). 미구성 시 관련 기능 graceful skip.
+# LLM 엔드포인트 (curate·요약·AI 생성·멀티턴 채팅). Anthropic 스타일 · 스트리밍/논스트리밍 2종.
+# 엔드포인트 URL 은 인증 없는 공개 URL(=시크릿성)이라 git 에 커밋하지 않는다 — 환경변수로 주입:
+#   export KNOWLEDGE_HUB_LLM_COMPLETE_URL=...   (논스트리밍)
+#   export KNOWLEDGE_HUB_LLM_STREAM_URL=...     (스트리밍)
+# 미설정 시 AI 관련 기능만 자동 graceful skip. effort/max_tokens 는 비시크릿 튜닝값이라 여기 둔다.
 [llm]
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"
+effort = "high"   # low | high (엔드포인트 default high)
+max_tokens = 4096
 
 # 관리자 승인 워크플로우. enabled=true 면 모든 쓰기가 승인 대기 큐를 거친다.
 [approval]

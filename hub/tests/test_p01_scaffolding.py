@@ -127,8 +127,10 @@ def test_config_load_from_file(tmp_path):
         "[id_patterns]\n"
         'adr = "^adr-[0-9]{4}$"\n'
         "[llm]\n"
-        'base_url = "http://localhost:8000/v1"\n'
-        'model = "local-model"\n',
+        'complete_url = "http://localhost:9000/complete"\n'
+        'stream_url = "http://localhost:9000/stream"\n'
+        'effort = "low"\n'
+        "max_tokens = 1024\n",
         encoding="utf-8",
     )
     cfg = Config.load(p)
@@ -138,8 +140,10 @@ def test_config_load_from_file(tmp_path):
     # 미정의 타입은 기본 패턴 폴백
     assert cfg.id_pattern("guide") == r"^[a-z]+-[0-9]{4}$"
     assert isinstance(cfg.llm, LLMConfig)
-    assert cfg.llm.base_url == "http://localhost:8000/v1"
-    assert cfg.llm.model == "local-model"
+    assert cfg.llm.complete_url == "http://localhost:9000/complete"
+    assert cfg.llm.stream_url == "http://localhost:9000/stream"
+    assert cfg.llm.effort == "low"
+    assert cfg.llm.max_tokens == 1024
 
 
 def test_example_config_loads():
@@ -147,4 +151,29 @@ def test_example_config_loads():
     example = Path(config_mod.__file__).resolve().parents[1] / "config.example.toml"
     cfg = Config.load(example)
     assert cfg.repo_root == Path("knowledge")
-    assert cfg.llm.model == "gpt-4o-mini"
+    # LLM 엔드포인트 URL 은 시크릿성이라 커밋 config 에 없다(env 로 주입) — 튜닝값만 존재.
+    assert cfg.llm.complete_url is None and cfg.llm.stream_url is None
+    assert cfg.llm.effort in ("low", "high") and cfg.llm.max_tokens > 0
+
+
+def test_load_default_layers_llm_urls_from_env(tmp_path, monkeypatch):
+    # 엔드포인트 URL 은 환경변수로 주입 — load_default 가 파일값 위에 덮어쓴다(env 우선).
+    p = tmp_path / "cfg.toml"
+    p.write_text("[llm]\neffort = \"high\"\n", encoding="utf-8")
+    monkeypatch.setenv("KNOWLEDGE_HUB_CONFIG", str(p))
+    monkeypatch.setenv("KNOWLEDGE_HUB_LLM_COMPLETE_URL", "https://c.example/")
+    monkeypatch.setenv("KNOWLEDGE_HUB_LLM_STREAM_URL", "https://s.example/")
+    cfg = Config.load_default()
+    assert cfg.llm.complete_url == "https://c.example/"
+    assert cfg.llm.stream_url == "https://s.example/"
+
+
+def test_load_default_no_env_leaves_urls_unset(tmp_path, monkeypatch):
+    # env 미설정 + 파일에 URL 없음 → 미구성(graceful skip 대상).
+    p = tmp_path / "cfg.toml"
+    p.write_text("[llm]\neffort = \"low\"\n", encoding="utf-8")
+    monkeypatch.setenv("KNOWLEDGE_HUB_CONFIG", str(p))
+    monkeypatch.delenv("KNOWLEDGE_HUB_LLM_COMPLETE_URL", raising=False)
+    monkeypatch.delenv("KNOWLEDGE_HUB_LLM_STREAM_URL", raising=False)
+    cfg = Config.load_default()
+    assert cfg.llm.complete_url is None and cfg.llm.stream_url is None

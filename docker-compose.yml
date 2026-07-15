@@ -27,7 +27,9 @@ services:
       HOST: 0.0.0.0
       PORT: "8000"
       PGPASSWORD: ${PGPASSWORD:-hubpw}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # LLM 엔드포인트 URL 은 시크릿성 — .env(또는 셸 env)에서 주입, git 에 커밋 안 함.
+      KNOWLEDGE_HUB_LLM_COMPLETE_URL: ${KNOWLEDGE_HUB_LLM_COMPLETE_URL:-}
+      KNOWLEDGE_HUB_LLM_STREAM_URL: ${KNOWLEDGE_HUB_LLM_STREAM_URL:-}
       KNOWLEDGE_HUB_CONFIG: /app/config.deploy.toml
       KNOWLEDGE_HUB_ROOT: /app/knowledge   # import 스크립트의 파일 소스(이관 원천)
     volumes:
@@ -49,7 +51,9 @@ services:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8001"
       PGPASSWORD: ${PGPASSWORD:-hubpw}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # LLM 엔드포인트 URL 은 시크릿성 — .env(또는 셸 env)에서 주입, git 에 커밋 안 함.
+      KNOWLEDGE_HUB_LLM_COMPLETE_URL: ${KNOWLEDGE_HUB_LLM_COMPLETE_URL:-}
+      KNOWLEDGE_HUB_LLM_STREAM_URL: ${KNOWLEDGE_HUB_LLM_STREAM_URL:-}
       KNOWLEDGE_HUB_CONFIG: /app/config.deploy.toml
     volumes:
       - ./config.deploy.toml:/app/config.deploy.toml:ro

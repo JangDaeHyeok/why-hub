@@ -17,8 +17,7 @@ dependencies = [
     "markdown-it-py",  # 마크다운 서버 렌더 (M6)
     "python-multipart",  # 쓰기/생성 UI 폼 파싱 (M7·M8)
     "pyyaml",        # frontmatter/이력 YAML (P02~)
-    "httpx",         # HTTP 테스트 (P08)
-    "openai",        # OpenAI 호환 LLM 클라이언트 (P12)
+    "httpx",         # HTTP 테스트 (P08) + LLM 엔드포인트 클라이언트 (P12)
 ]
 
 [project.optional-dependencies]
