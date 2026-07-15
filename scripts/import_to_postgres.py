@@ -38,6 +38,9 @@ def main() -> int:
     try:
         doc_ids = src.all_doc_ids()
         print(f"문서 {len(doc_ids)}건 이관 시작 (root={root})")
+        # 1차: id-only 선삽입 → 이관 중 related/supersedes dangling lint 가 순서·순환에
+        # 무관하게 통과하도록 모든 문서 id 를 미리 존재시킨다(2차 reflect 가 전체 컬럼 덮어씀).
+        dst.precreate_ids(doc_ids)
         for doc_id in doc_ids:
             raw = src.get_raw(doc_id)
             if raw is None:

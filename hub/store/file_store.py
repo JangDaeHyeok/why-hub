@@ -12,7 +12,9 @@ from pathlib import Path
 from ..config import Config
 from ..models import Hit, SaveResult
 from . import history as history_mod
+from . import journal
 from . import paths
+from . import reconcile
 from . import save as save_store
 from . import submissions as submissions_store
 from .base import Store
@@ -28,6 +30,10 @@ class FileStore(Store):
         self.root = Path(root)
         self.config = config
         self.index = open_index(self.root, default_project=config.default_project)
+        # 하드 종료로 부분 save(이력/문서/스냅샷/인덱스 불일치)가 남았는지 pending 저널로 감지.
+        # 남아 있으면 기동 시 reconcile 로 수렴시킨다(저널 없으면 no-op — 정상 store 는 건너뜀).
+        if journal.pending(self.root):
+            reconcile.run(self.root, self.config, index=self.index)
 
     def close(self) -> None:
         self.index.close()
@@ -69,11 +75,10 @@ class FileStore(Store):
     ) -> list[Hit]:
         if not tokens:
             return []
-        # FTS5 dialect: AND 는 따옴표 토큰 나열, OR 는 OR 결합(토큰은 \w+ 라 안전).
-        query = (
-            " ".join(f'"{t}"' for t in tokens) if mode == "and"
-            else " OR ".join(tokens)
-        )
+        # FTS5 dialect: 각 토큰을 따옴표로 감싸 리터럴화하고(예약어 OR/AND/NOT/NEAR 무력화)
+        # AND 는 공백 나열, OR 는 실제 OR 연산자로 결합한다.
+        quoted = [f'"{t}"' for t in tokens]
+        query = " ".join(quoted) if mode == "and" else " OR ".join(quoted)
         return self.index.search(query, filters, k)
 
     def list_documents(
@@ -118,11 +123,12 @@ class FileStore(Store):
     def create_submission(
         self, *, op: str, doc_id: str, raw_markdown: str, intended_diff: str | None,
         change_type: str | None, project: str | None, actor: str, prelint: dict, now: str,
+        base_hash: str | None = None,
     ) -> dict:
         return submissions_store.create(
             self.root, op=op, doc_id=doc_id, raw_markdown=raw_markdown,
             intended_diff=intended_diff, change_type=change_type, project=project,
-            actor=actor, prelint=prelint, now=now,
+            actor=actor, prelint=prelint, now=now, base_hash=base_hash,
         )
 
     def read_submission(self, sub_id: str) -> dict | None:

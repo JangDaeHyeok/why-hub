@@ -74,6 +74,7 @@ class Store(ABC):
     def create_submission(
         self, *, op: str, doc_id: str, raw_markdown: str, intended_diff: str | None,
         change_type: str | None, project: str | None, actor: str, prelint: dict, now: str,
+        base_hash: str | None = None,
     ) -> dict: ...
 
     @abstractmethod

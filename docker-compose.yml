@@ -32,7 +32,9 @@ services:
       KNOWLEDGE_HUB_ROOT: /app/knowledge   # import 스크립트의 파일 소스(이관 원천)
     volumes:
       - ./config.deploy.toml:/app/config.deploy.toml:ro
-      - ./knowledge:/app/knowledge:ro      # 기존 파일 저장소 → import_to_postgres 소스
+      # 기존 파일 저장소 → import_to_postgres 소스. FileStore 가 SQLite 인덱스를 WAL 로 여므로
+      # (-wal/-shm 생성·PRAGMA 쓰기) 읽기 전용이면 열기 자체가 실패한다 → rw 로 마운트.
+      - ./knowledge:/app/knowledge
     ports:
       - "8000:8000"
     depends_on:

@@ -22,6 +22,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# 배포(storage.backend=postgres) 시 필요한 드라이버. 로컬(FileStore)은 불필요.
+#   pip install -e ".[postgres]"
+postgres = [
+    "psycopg[binary]",
+]
 dev = [
     "pytest>=8",
 ]

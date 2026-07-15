@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS submissions(
   change_type text, project text, actor text, status text, prelint jsonb,
   created text, reviewer text, reviewed_at text, note text
 );
+ALTER TABLE submissions ADD COLUMN IF NOT EXISTS base_hash text;
 """
 
 # 락 종류별 advisory key (임의 상수).
@@ -357,47 +358,48 @@ class PostgresStore(Store):
     def create_submission(
         self, *, op: str, doc_id: str, raw_markdown: str, intended_diff: str | None,
         change_type: str | None, project: str | None, actor: str, prelint: dict, now: str,
+        base_hash: str | None = None,
     ) -> dict:
         sub = {
             "id": _subs.new_id(now), "op": op, "doc_id": doc_id,
             "raw_markdown": raw_markdown, "intended_diff": intended_diff,
-            "change_type": change_type, "project": project, "actor": actor,
-            "status": "pending", "prelint": prelint, "created": now,
+            "change_type": change_type, "project": project, "base_hash": base_hash,
+            "actor": actor, "status": "pending", "prelint": prelint, "created": now,
             "reviewer": None, "reviewed_at": None, "note": None,
         }
         with self._lock, self.conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO submissions(id, op, doc_id, raw_markdown, intended_diff, "
-                "change_type, project, actor, status, prelint, created, reviewer, "
+                "change_type, project, base_hash, actor, status, prelint, created, reviewer, "
                 "reviewed_at, note) VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s)",
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s)",
                 (sub["id"], op, doc_id, raw_markdown, intended_diff, change_type,
-                 project, actor, "pending", json.dumps(prelint, ensure_ascii=False),
+                 project, base_hash, actor, "pending", json.dumps(prelint, ensure_ascii=False),
                  now, None, None, None),
             )
         return sub
 
     def _sub_row(self, cur) -> list[dict]:
         cols = ("id", "op", "doc_id", "raw_markdown", "intended_diff", "change_type",
-                "project", "actor", "status", "prelint", "created", "reviewer",
+                "project", "base_hash", "actor", "status", "prelint", "created", "reviewer",
                 "reviewed_at", "note")
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    _SUB_SELECT = (
+        "SELECT id, op, doc_id, raw_markdown, intended_diff, change_type, "
+        "project, base_hash, actor, status, prelint, created, reviewer, reviewed_at, note "
+        "FROM submissions"
+    )
+
     def read_submission(self, sub_id: str) -> dict | None:
         with self._lock, self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, op, doc_id, raw_markdown, intended_diff, change_type, "
-                "project, actor, status, prelint, created, reviewer, reviewed_at, note "
-                "FROM submissions WHERE id=%s", (sub_id,),
-            )
+            cur.execute(self._SUB_SELECT + " WHERE id=%s", (sub_id,))
             rows = self._sub_row(cur)
         return rows[0] if rows else None
 
     def list_submissions(self, status: str | None = None) -> list[dict]:
         with self._lock, self.conn.cursor() as cur:
-            sql = ("SELECT id, op, doc_id, raw_markdown, intended_diff, change_type, "
-                   "project, actor, status, prelint, created, reviewer, reviewed_at, note "
-                   "FROM submissions")
+            sql = self._SUB_SELECT
             params: list = []
             if status is not None:
                 sql += " WHERE status=%s"
@@ -441,6 +443,19 @@ class PostgresStore(Store):
         return self._advisory(_SUBMISSIONS_KEY)
 
     # ── 이관(import) 전용 헬퍼 — 파일 백엔드의 원본 이력/의도변경을 그대로 복사 ──
+    def precreate_ids(self, doc_ids: list[str]) -> None:
+        """id-only 행을 미리 넣어 이관 중 exists() 가 모든 문서에 대해 참이 되게 한다.
+
+        reflect 의 lint 는 related/supersedes dangling 을 exists 로 검사하므로, 순서·순환에
+        무관하게 이관이 성공하려면 문서 삽입 전 모든 id 가 존재해야 한다(반영 시 ON CONFLICT 로
+        전체 컬럼이 덮어써진다). 이미 있는 행은 건드리지 않는다."""
+        with self._lock, self.conn.cursor() as cur:
+            for doc_id in doc_ids:
+                cur.execute(
+                    "INSERT INTO documents(id) VALUES (%s) ON CONFLICT(id) DO NOTHING",
+                    (doc_id,),
+                )
+
     def replace_history(self, doc_id: str, entries: list[dict]) -> None:
         with self._lock, self.conn.cursor() as cur:
             cur.execute("DELETE FROM history WHERE doc_id=%s", (doc_id,))
@@ -466,15 +481,15 @@ class PostgresStore(Store):
         with self._lock, self.conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO submissions(id, op, doc_id, raw_markdown, intended_diff, "
-                "change_type, project, actor, status, prelint, created, reviewer, "
+                "change_type, project, base_hash, actor, status, prelint, created, reviewer, "
                 "reviewed_at, note) VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s) "
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s) "
                 "ON CONFLICT(id) DO UPDATE SET status=excluded.status, "
                 "reviewer=excluded.reviewer, reviewed_at=excluded.reviewed_at, "
                 "note=excluded.note",
                 (sub["id"], sub.get("op"), sub.get("doc_id"), sub.get("raw_markdown"),
                  sub.get("intended_diff"), sub.get("change_type"), sub.get("project"),
-                 sub.get("actor"), sub.get("status", "pending"),
+                 sub.get("base_hash"), sub.get("actor"), sub.get("status", "pending"),
                  json.dumps(sub.get("prelint") or {"ok": True, "reasons": []}, ensure_ascii=False),
                  sub.get("created"), sub.get("reviewer"), sub.get("reviewed_at"), sub.get("note")),
             )

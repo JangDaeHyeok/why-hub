@@ -6,9 +6,12 @@ import threading
 
 import pytest
 
-from hub.config import Config
+from hub.chat import ChatOrchestrator
+from hub.config import ApprovalConfig, Config
 from hub.service import KnowledgeService
+from hub.store import anchors as anchors_mod
 from hub.store import journal, paths, reconcile, snapshots
+from hub.store.file_store import FileStore
 from hub.store.index_fts import Index, open_index
 from hub.store.lint import LintError, lint
 from hub.store.normalize import normalize
@@ -215,3 +218,155 @@ def test_c5_reconcile_reindexes_metadata_only_change(tmp_path):
     idx = open_index(tmp_path)
     assert idx.get_meta("adr-0001")["status"] == "deprecated"  # 수렴
     idx.close()
+
+
+# ══ 2차 리뷰 수정 회귀 테스트 ═══════════════════════════════════════════
+
+# ── R1: 중첩 코드펜스(4-백틱 안의 3-백틱)를 조기에 닫지 않는다 ──────────
+def test_r1_normalize_preserves_nested_fence():
+    # 4-백틱 펜스 안에 3-백틱 예시가 들어 있어도, 내부의 헤더·빈 줄·공백이 재작성되면 안 된다.
+    inner = "````\n# 헤더 아님\n\n\n```\n코드 예시\n```\n   들여쓴 줄\n````"
+    raw = (
+        "---\nid: guide-0001\ntype: guide\ntitle: t\nstatus: proposed\ncreated: 2026-01-01\n---\n\n"
+        f"# H\n\n{inner}\n"
+    )
+    nd = normalize(raw)
+    # 내부 원문(짧은 펜스·빈 줄·트레일링 공백 포함)이 그대로 보존된다.
+    assert "# 헤더 아님\n\n\n```\n코드 예시\n```\n   들여쓴 줄" in nd.body
+    # 멱등성 유지.
+    assert normalize(nd.text).text == nd.text
+
+
+def test_r1_anchor_ignores_headers_in_nested_fence():
+    body = "# 진짜\n\n````\n# 가짜\n```\n# 여전히 가짜\n```\n````\n\n# 진짜2\n\nx\n"
+    slugs = [a.slug for a in anchors_mod.parse_anchors(body)]
+    assert slugs == ["진짜", "진짜2"]  # 펜스 안 헤더는 모두 무시
+
+
+# ── R2: FTS OR 모드에서 예약어 토큰이 연산자로 오인되지 않는다 ──────────
+def test_r2_fts_or_mode_reserved_tokens_no_error(svc):
+    # OR/AND/NOT/NEAR 같은 FTS5 예약어가 토큰으로 와도 OperationalError 없이 리스트 반환.
+    for toks in (["OR"], ["AND", "세션"], ["NOT"], ["NEAR", "OR", "AND"]):
+        hits = svc.store.search(toks, None, 10, mode="or")
+        assert isinstance(hits, list)
+    # 정상 OR 검색은 여전히 매칭.
+    assert any(h.doc_id == "adr-0001" for h in svc.store.search(["세션", "OR"], None, 10, mode="or"))
+
+
+# ── R3: 같은 기준 버전에서 갈라진 두 제출 — 나중 승인은 충돌로 거부 ──────
+def _approval_svc(tmp_path):
+    c = Config()
+    c.approval = ApprovalConfig(enabled=True, admins=["alice"])
+    return KnowledgeService(tmp_path, c)
+
+
+def test_r3_stale_approval_rejected_no_lost_update(tmp_path):
+    svc = _approval_svc(tmp_path)
+    # 문서 생성 → 승인(기준 버전 확정).
+    sid0 = svc.save_document(_adr(), actor="carol")["submission_id"]
+    svc.approve_submission(sid0, approver="alice", now="2026-07-14T10:00:00")
+
+    # 같은 기준에서 두 편집을 제출(둘 다 현재 body_hash 를 base 로 캡처).
+    editA = _adr(decision="A: 세션+Redis 유지, TTL 조정.")
+    editB = _adr(decision="B: 완전히 다른 방향 — 토큰 도입 검토.")
+    sidA = svc.save_document(editA, actor="carol")["submission_id"]
+    sidB = svc.save_document(editB, actor="dave")["submission_id"]
+
+    # A 승인 → 반영(문서 버전 이동).
+    svc.approve_submission(sidA, approver="alice", now="2026-07-14T11:00:00")
+    assert "TTL 조정" in svc.get_raw("adr-0001")
+
+    # B 승인 → 기준 버전 불일치 → 충돌 거부(먼저 승인된 A 의 변경이 조용히 사라지지 않는다).
+    with pytest.raises(ValueError) as ei:
+        svc.approve_submission(sidB, approver="alice", now="2026-07-14T12:00:00")
+    assert "충돌" in str(ei.value)
+    # A 의 내용은 그대로, B 제출은 pending 유지(재작성 가능).
+    assert "TTL 조정" in svc.get_raw("adr-0001")
+    assert svc.get_submission(sidB)["status"] == "pending"
+    svc.close()
+
+
+def test_r3_idempotent_recovery_reapprove_after_crash(tmp_path):
+    # P2-5: 반영은 됐는데 상태 갱신 전에 크래시 → 문서 적용됨 + 제출 pending.
+    # UI 에서 재승인하면 충돌이 아니라 멱등 복구(상태만 approved)로 수렴해야 한다.
+    svc = _approval_svc(tmp_path)
+    sid0 = svc.save_document(_adr(), actor="carol")["submission_id"]
+    svc.approve_submission(sid0, approver="alice", now="2026-07-14T10:00:00")
+
+    edit = _adr(decision="세션 유지, TTL 만 조정.")
+    sid = svc.save_document(edit, actor="carol")["submission_id"]
+    # 크래시 시뮬레이션: 문서만 반영하고 제출 상태는 pending 그대로 둔다.
+    svc._reflect(edit, actor="carol", now="2026-07-14T11:00:00")
+    assert svc.get_submission(sid)["status"] == "pending"
+    assert "TTL 만 조정" in svc.get_raw("adr-0001")
+
+    # 재승인 → 충돌 아님(내용 이미 동일). 상태만 approved 로 마무리(멱등).
+    res = svc.approve_submission(sid, approver="alice", now="2026-07-14T12:00:00")
+    assert res.change_type == "noop"
+    assert svc.get_submission(sid)["status"] == "approved"
+    assert "TTL 만 조정" in svc.get_raw("adr-0001")
+    svc.close()
+
+
+def test_r3_normal_approval_still_works(tmp_path):
+    # 충돌이 없으면 승인은 종전대로 반영된다(거짓 양성 없음).
+    svc = _approval_svc(tmp_path)
+    sid = svc.save_document(_adr(), actor="carol")["submission_id"]
+    svc.approve_submission(sid, approver="alice", now="2026-07-14T10:00:00")
+    assert svc.get_document("adr-0001") is not None
+    svc.close()
+
+
+# ── R4: propose_deprecate 의 reason 이 제출까지 전달된다 ─────────────────
+def test_r4_deprecate_reason_reaches_submission(tmp_path):
+    svc = KnowledgeService(tmp_path)  # 승인 게이트 off — apply 는 submit_change 직접 호출
+    svc.save_document(_adr(), actor="a", now="2026-07-14T10:00:00")
+    orch = ChatOrchestrator(svc)
+    sid = orch.new_session(actor="a")
+    sess = orch.get(sid)
+    staged = orch._stage_deprecate(sess, "adr-0001", "더 이상 유효하지 않음", None)
+    # staged item(반환 dict 아님)에 근거가 실려야 한다.
+    assert sess["staged"][0]["intended_diff"] == "폐기 사유: 더 이상 유효하지 않음"
+
+    subs = orch.apply(sid, actor="a")
+    sub = svc.get_submission(subs[0]["submission_id"])
+    assert sub["intended_diff"] == "폐기 사유: 더 이상 유효하지 않음"
+    svc.close()
+
+
+# ── R5: 잘못된 frontmatter YAML 로 PUT → 422(500 아님) ──────────────────
+def test_r5_put_malformed_frontmatter_is_422(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from hub.interfaces.http_api import build_app
+
+    svc = KnowledgeService(tmp_path)
+    client = TestClient(build_app(svc))
+    bad = "---\nid: adr-0001\ntitle: [unclosed\ntype: adr\n---\n\n# 배경\n\nx\n"
+    resp = client.put("/docs/adr-0001", json={"markdown": bad, "actor": "a"})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "lint"
+    svc.close()
+
+
+# ── R6: pending 저널이 있으면 FileStore 오픈 시 reconcile 로 복구 ────────
+def test_r6_file_store_open_reconciles_pending_journal(tmp_path):
+    save_document(_adr(), root=tmp_path, actor="a", now="2026-07-14T10:00:00")
+    hp = paths.history_path(tmp_path, "adr-0001")
+    size_before = hp.stat().st_size
+    # 크래시 시뮬레이션: 유령 이력 append + 'doc' 미완 저널.
+    with open(hp, "a", encoding="utf-8") as f:
+        f.write("- ts: 2026-07-14T11:00:00\n  actor: x\n  type: revision\n  anchor: 결정\n  summary: 유령\n  delta: '+ x'\n")
+    journal.begin("adr-0001", tmp_path, op="save", hist_size=size_before)
+    j = journal.load("adr-0001", tmp_path)
+    j["steps_done"] = ["history"]
+    journal._write("adr-0001", tmp_path, j)
+
+    from hub.store import history
+    assert len(history.read("adr-0001", tmp_path)) == 2  # 유령 포함
+
+    # FileStore 오픈만으로 복구된다(별도 reconcile 호출 없이).
+    store = FileStore(tmp_path, Config())
+    assert len(history.read("adr-0001", tmp_path)) == 1  # 유령 제거
+    assert journal.pending(tmp_path) == []
+    store.close()

@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 import re
 from collections import deque
 from pathlib import Path
@@ -50,6 +52,24 @@ _TYPE_PREFIX = {
 
 def _prefix_for(doc_type: str) -> str:
     return _TYPE_PREFIX.get(doc_type, "ref")
+
+
+def _version_hash(raw_markdown: str | None) -> str | None:
+    """정규화된 문서 내용(frontmatter + 본문)의 sha256 — 단 `updated` 는 제외.
+
+    승인 워크플로우의 낙관적 충돌·멱등 복구 판별용 '버전 토큰'. reflect 가 매번 갱신하는
+    `updated` 만 빼면 결정론적이라, 반영 시점과 무관하게 두 문서의 '의미 있는 내용'이 같은지
+    비교할 수 있다. **본문만 보는 body_hash 로는 부족** — 폐기(status 만 바뀌는 frontmatter-only
+    변경)를 감지 못하기 때문이다. 문서 없음/깨진 YAML 이면 None."""
+    if raw_markdown is None:
+        return None
+    try:
+        nd = normalize(raw_markdown)
+    except yaml.YAMLError:
+        return None
+    fm = {k: v for k, v in nd.frontmatter.items() if k != "updated"}
+    canonical = json.dumps(fm, sort_keys=True, ensure_ascii=False, default=str) + "\n" + nd.body
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _today() -> str:
@@ -275,6 +295,10 @@ class KnowledgeService:
         # frontmatter id 이므로, 큐에 표시된 doc_id 와 반영 결과가 달라지는 것을 막는다.
         if doc_id and nd.id and doc_id != nd.id:
             raise LintError([f"제출 target id 불일치: 지정 {doc_id} ≠ 문서 frontmatter {nd.id}"])
+        # 제출 시점 문서 버전(내용 해시)을 기준값으로 캡처(신규 문서는 None). 승인 시 현재 버전과
+        # 대조해, 같은 기준에서 갈라진 다른 제출이 먼저 승인됐다면 이 제출을 충돌로 거부한다
+        # (동일 문서 동시 편집이 서로를 덮어써 승인된 변경이 유실되는 것 방지).
+        base_hash = _version_hash(self.store.get_raw(resolved_id))
         sub = self.store.create_submission(
             op=op,
             doc_id=resolved_id,
@@ -285,6 +309,7 @@ class KnowledgeService:
             actor=actor,
             prelint=self._prelint(raw_markdown),
             now=now_ts,
+            base_hash=base_hash,
         )
         return {"submission_id": sub["id"], "status": sub["status"],
                 "doc_id": sub["doc_id"], "op": sub["op"],
@@ -324,6 +349,29 @@ class KnowledgeService:
                 raise KeyError(f"제출 없음: {sub_id}")
             if sub["status"] != "pending":
                 raise ValueError(f"이미 처리된 제출: {sub_id} ({sub['status']})")
+            current_raw = self.store.get_raw(sub["doc_id"])
+            current_hash = _version_hash(current_raw)
+            # 멱등 복구 — 반영(_reflect 커밋)은 됐는데 상태 갱신 전에 크래시하면 문서는 적용됐고
+            # 제출만 pending 으로 남는다(P2-5). 현재 문서가 이미 이 제출 내용과 동일하면 다시
+            # 반영하지 않고 상태 전이만 마무리한다. UI 에서 재승인하면 이 경로로 안전하게 수렴한다.
+            if current_raw is not None and current_hash == _version_hash(sub["raw_markdown"]):
+                res = SaveResult(
+                    id=sub["doc_id"], change_type="noop", anchors_changed=[],
+                    history_id=None,
+                    warnings=["이미 반영된 내용 — 상태만 승인 처리(멱등 복구)"],
+                )
+                self.store.set_submission_status(
+                    sub_id, status="approved", reviewer=approver, note=None, now=now_ts,
+                )
+                return res
+            # 낙관적 충돌 검사 — 제출 기준 버전과 현재 문서 버전이 다르면(그 사이 다른 제출이
+            # 승인돼 문서가 바뀌었으면) 거부한다. 이 제출을 그대로 반영하면 먼저 승인된 변경이
+            # 조용히 사라진다(lost update). 기준값이 없는 레거시 제출('base_hash' 키 부재)은 스킵.
+            if "base_hash" in sub and current_hash != sub["base_hash"]:
+                raise ValueError(
+                    f"제출 기준 버전 불일치(충돌): {sub_id} — 문서가 제출 이후 변경됨. "
+                    "최신 문서로 다시 작성해 제출하세요."
+                )
             # 실제 반영 — actor 는 원제출자(프로버넌스 보존). lint 실패 시 예외 전파(pending 유지).
             res = self._reflect(
                 sub["raw_markdown"],

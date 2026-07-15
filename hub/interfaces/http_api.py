@@ -13,6 +13,7 @@ import json
 import os
 from dataclasses import asdict, is_dataclass
 
+import yaml
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -156,8 +157,12 @@ def build_app(service: KnowledgeService) -> FastAPI:
     # ── 저장 (쓰기 — save 루틴 경유) ──────────────────────────────────
     @app.put("/docs/{doc_id}")
     def put_doc(doc_id: str, req: SaveRequest):
-        # 경로 id 와 문서 frontmatter id 일치 검증.
-        nd = normalize(req.markdown)
+        # 경로 id 와 문서 frontmatter id 일치 검증. 깨진 YAML 은 LintError(422)로 매핑
+        # (save_document 의 게이트와 동일 경로 — 여기서 raw YAML 예외로 500 나는 것 방지).
+        try:
+            nd = normalize(req.markdown)
+        except yaml.YAMLError as e:
+            raise LintError([f"frontmatter YAML 파싱 실패: {e}"]) from e
         if nd.id and nd.id != doc_id:
             raise HTTPException(
                 status_code=422, detail=f"id 불일치: 경로 {doc_id} ≠ 문서 {nd.id}"

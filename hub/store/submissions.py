@@ -38,6 +38,7 @@ def create(
     now: str,
     change_type: str | None = None,
     project: str | None = None,
+    base_hash: str | None = None,
 ) -> dict:
     """새 제출을 pending 으로 큐에 넣는다. 반환: 제출 dict."""
     sub = {
@@ -48,6 +49,7 @@ def create(
         "intended_diff": intended_diff,
         "change_type": change_type,  # 승인 시 store.save_document 에 그대로 전달(ingest 등 프로버넌스 보존)
         "project": project,  # 어느 프로젝트에 속하는 제출인지(승인함 필터용)
+        "base_hash": base_hash,  # 제출 시점 문서 body_hash(없으면 None) — 승인 시 낙관적 충돌 검사
         "actor": actor,
         "status": "pending",
         "prelint": prelint,

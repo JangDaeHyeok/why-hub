@@ -210,6 +210,7 @@ class ChatOrchestrator:
             sub = self.service.submit_change(
                 item["markdown"], actor=actor, op=item["op"],
                 doc_id=item.get("doc_id"), project=item.get("project"),
+                intended_diff=item.get("intended_diff"),
             )
             submissions.append(sub)
             staged.pop(0)  # 성공 후에만 제거 → 실패 항목은 맨 앞에 남아 재시도가 그것부터 재개
@@ -254,22 +255,29 @@ class ChatOrchestrator:
             res = {"error": str(e)}
         return json.dumps(res, ensure_ascii=False, default=str)
 
-    def _stage(self, sess: dict, op: str, *, markdown: str, doc_id=None, target_type=None) -> dict:
+    def _stage(
+        self, sess: dict, op: str, *, markdown: str, doc_id=None, target_type=None,
+        intended_diff: str | None = None,
+    ) -> dict:
         prelint = self.service.lint_markdown(markdown)
         item = {"op": op, "markdown": markdown, "doc_id": doc_id,
                 "target_type": target_type, "project": sess.get("project"),
-                "prelint": prelint}
+                "intended_diff": intended_diff, "prelint": prelint}
         sess["staged"].append(item)
-        return {"staged": True, "op": op, "doc_id": doc_id, "prelint": prelint}
+        return {"staged": True, "op": op, "doc_id": doc_id,
+                "intended_diff": intended_diff, "prelint": prelint}
 
     def _stage_deprecate(self, sess: dict, doc_id: str, reason: str, superseded_by) -> dict:
         raw = self.service.get_raw(doc_id)
         if raw is None:
             return {"error": f"문서 없음: {doc_id}"}
         markdown = _set_deprecated(raw, superseded_by)
-        item = self._stage(sess, "deprecate", markdown=markdown, doc_id=doc_id)
-        item["reason"] = reason
-        return item
+        # reason 은 staged item 에 intended_diff(폐기 근거)로 실어 apply→submit_change→이력까지
+        # 전달한다(승인 워크플로우·history 컨텍스트 보존). 반환 dict 에만 남겨두면 유실된다.
+        return self._stage(
+            sess, "deprecate", markdown=markdown, doc_id=doc_id,
+            intended_diff=f"폐기 사유: {reason}" if reason else None,
+        )
 
 
 def _drain(gen):

@@ -19,10 +19,32 @@ import re
 
 from ..models import Anchor
 
-# 코드펜스 시작/종료 (백틱/틸드 3개 이상). 여는·닫는 것을 토글로 처리.
-_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+# 코드펜스 시작/종료 (백틱/틸드 3개 이상). group2=마커, group3=정보문자열(닫는 줄엔 없어야 함).
+_FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})(.*)$")
 # ATX 헤더: '#'*(1~6) 다음에 공백/탭이 오거나(텍스트 있음) 라인 끝(빈 헤더).
 _HEADER_RE = re.compile(r"^(#{1,6})(?:[ \t]+(.*\S))?[ \t]*$")
+
+
+def fence_open(line: str):
+    """펜스 여는 줄이면 (마커문자, 길이) 반환, 아니면 None."""
+    m = _FENCE_RE.match(line)
+    if not m:
+        return None
+    marker = m.group(2)
+    return marker[0], len(marker)
+
+
+def fence_closes(line: str, opener) -> bool:
+    """line 이 opener=(문자,길이) 펜스를 닫는가.
+
+    CommonMark: 같은 마커 문자 + 여는 것 이상의 길이 + 정보문자열 없음.
+    (더 짧거나 다른 문자·정보문자열이 붙은 안쪽 펜스는 닫지 않는다 → 중첩 펜스 보존.)
+    """
+    m = _FENCE_RE.match(line)
+    if not m:
+        return False
+    marker = m.group(2)
+    return marker[0] == opener[0] and len(marker) >= opener[1] and not m.group(3).strip()
 
 
 def _slugify(text: str) -> str:
@@ -39,12 +61,15 @@ def _slugify(text: str) -> str:
 def _header_lines(lines: list[str]) -> list[tuple[int, str, int]]:
     """코드펜스를 건너뛰며 헤더만 추출 → [(level, text, line_idx)]."""
     result: list[tuple[int, str, int]] = []
-    in_fence = False
+    fence = None  # 열린 펜스의 (마커문자, 길이); None 이면 펜스 밖.
     for i, line in enumerate(lines):
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
+        if fence is not None:
+            if fence_closes(line, fence):
+                fence = None
             continue
-        if in_fence:
+        op = fence_open(line)
+        if op is not None:
+            fence = op
             continue
         m = _HEADER_RE.match(line)
         if m:

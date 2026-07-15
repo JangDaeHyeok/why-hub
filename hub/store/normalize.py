@@ -18,13 +18,14 @@ from dataclasses import dataclass
 
 import yaml
 
+from .anchors import fence_closes, fence_open
+
 # frontmatter 재직렬화 순서 (models.Document 필드 순서와 정렬).
 _FM_ORDER = [
     "id", "type", "title", "status", "project", "tags", "related",
     "supersedes", "source", "author", "created", "updated",
 ]
 
-_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 _HEADER_RE = re.compile(r"^(#{1,6})(?:[ \t]+(.*\S))?[ \t]*$")
 
 
@@ -107,14 +108,19 @@ def _normalize_body(body: str) -> str:
 
     # Pass A: 트레일링 공백 제거 + 헤더 표기 통일 (코드펜스 밖에서만).
     a: list[str] = []
-    in_fence = False
+    fence = None  # 열린 펜스의 (마커문자, 길이); None 이면 펜스 밖.
     for line in lines:
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            a.append(line.rstrip())
+        if fence is not None:
+            if fence_closes(line, fence):
+                fence = None
+                a.append(line.rstrip())
+            else:
+                a.append(line)  # 코드펜스 내부는 그대로 보존
             continue
-        if in_fence:
-            a.append(line)  # 코드펜스 내부는 그대로 보존
+        op = fence_open(line)
+        if op is not None:
+            fence = op
+            a.append(line.rstrip())
             continue
         stripped = line.rstrip()
         m = _HEADER_RE.match(stripped)
@@ -127,13 +133,16 @@ def _normalize_body(body: str) -> str:
 
     # Pass B: 빈 줄 규칙 (연속 빈 줄 ≤1, 헤더 앞뒤 빈 줄 1개, 코드펜스 밖에서만).
     out: list[str] = []
-    in_fence = False
+    fence = None
     for line in a:
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
+        if fence is not None:
             out.append(line)
+            if fence_closes(line, fence):
+                fence = None
             continue
-        if in_fence:
+        op = fence_open(line)
+        if op is not None:
+            fence = op
             out.append(line)
             continue
         is_header = bool(_HEADER_RE.match(line)) and line.startswith("#")

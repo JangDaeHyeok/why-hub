@@ -44,8 +44,8 @@ python -m hub.interfaces.web
 # 3) (선택) MCP 서버 실행 — AI 에이전트 접근용
 python -m hub.interfaces.mcp_server        # 기본 stdio
 
-# 4) (선택) HTTP JSON API 만 띄우기
-uvicorn hub.interfaces.http_api:app --reload
+# 4) (선택) HTTP JSON API 만 띄우기 (웹 UI 없이 순수 JSON) → http://127.0.0.1:8000
+python -m hub.interfaces.http_api
 ```
 
 브라우저에서 `http://127.0.0.1:8000` 을 열면 문서 목록 · 검색 · 작성 · AI 생성 · 승인함을 사용할 수 있습니다.
