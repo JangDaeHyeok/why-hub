@@ -371,3 +371,153 @@ def test_r6_file_store_open_reconciles_pending_journal(tmp_path):
     assert len(history.read("adr-0001", tmp_path)) == 1  # 유령 제거
     assert journal.pending(tmp_path) == []
     store.close()
+
+
+# ══ 3차 리뷰 수정 회귀 테스트 (P1~P7) ═══════════════════════════════════
+
+# ── P1: 미존재/traversal/glob id 로 타 프로젝트 이력·docs-diff 조회 차단 ──
+def test_p1_get_history_rejects_traversal_id(svc):
+    svc.save_document(_adr(status="deprecated"), actor="a", now="2026-07-14T11:00:00")
+    assert svc.get_history("adr-0001")  # 정상 문서는 이력 조회됨
+    # 메타 없는 crafted id → 빈 목록(경로 주입으로 타 문서 이력 노출 안 됨).
+    assert svc.get_history("../history/adr-0001") == []
+    assert svc.get_history("adr-0001/../adr-0001") == []
+
+
+def test_p1_get_docs_diff_rejects_glob_id(svc):
+    svc.save_document(_adr(decision="새 결정."), actor="a",
+                      intended_diff="의도: 변경", now="2026-07-14T11:00:00")
+    assert svc.get_docs_diff("adr-0001")  # 정상 조회
+    assert svc.get_docs_diff("*") == []  # glob 로 전 문서 훑기 차단
+    assert svc.get_docs_diff("../docs-diff/adr-0001") == []
+
+
+def test_p1_store_layer_defense_on_unsafe_id(svc):
+    # 서비스 우회(스토어 직접 호출)에도 심층방어가 동작한다.
+    assert svc.store.read_history("../history/adr-0001") == []
+    assert svc.store.read_docs_diff("*") == []
+
+
+def test_p1_is_safe_doc_id():
+    # 경로/glob 안전성만 판정한다(전체 id 형식 검증은 lint 정규식의 몫). 선행/후행 공백은 막지만
+    # 내부 공백은 경로상 위험이 아니므로 여기선 통과 대상이 아니다.
+    assert paths.is_safe_doc_id("adr-0001")
+    for bad in ["../x", "a/b", "a\\b", ".hidden", " a", "a ", "*", "a?b", "a[b]", "", None]:
+        assert not paths.is_safe_doc_id(bad)
+
+
+# ── P2: frontmatter-only 변경(폐기/제목)도 이력에 기록된다 ───────────────
+def test_p2_deprecation_frontmatter_only_recorded(svc):
+    from hub.store import history
+
+    res = svc.save_document(_adr(status="deprecated"), actor="a", now="2026-07-14T11:00:00")
+    assert res.change_type == "deprecation"
+    assert res.history_id is not None
+    entries = history.read("adr-0001", svc.root)
+    assert [e.type for e in entries] == ["created", "deprecation"]
+    assert "status" in entries[-1].delta  # '무엇'(status 전이)이 delta 로 남는다
+
+
+def test_p2_title_change_recorded(svc):
+    from hub.store import history
+
+    svc.save_document(_adr(title="새 제목"), actor="a", now="2026-07-14T11:00:00")
+    entries = history.read("adr-0001", svc.root)
+    assert len(entries) == 2
+    assert entries[-1].type == "revision"
+    assert "title" in entries[-1].delta
+
+
+def test_p2_pure_noop_still_not_recorded(svc):
+    from hub.store import history
+
+    # 완전히 동일한 재저장(updated 만 바뀜) → 이력 추가 안 됨(회귀 방지).
+    svc.save_document(_adr(), actor="a", now="2026-07-14T11:00:00")
+    assert len(history.read("adr-0001", svc.root)) == 1
+
+
+# ── P3: 클라이언트 change_type 위조/무효값 차단 ─────────────────────────
+def test_p3_invalid_change_type_rejected(svc):
+    with pytest.raises(LintError) as ei:
+        svc.save_document(_adr(decision="변경."), actor="a",
+                          change_type="bogus", now="2026-07-14T11:00:00")
+    assert any("change_type" in r for r in ei.value.reasons)
+
+
+def test_p3_forged_created_does_not_collapse_multihunk(svc):
+    from hub.store import history
+
+    # 여러 섹션 편집 + change_type='created' 위조 → 첫 훅으로 뭉개지지 않고 섹션별로 보존된다.
+    edited = _adr(decision="결정 대폭 변경.", alt="대안도 완전히 교체.")
+    svc.save_document(edited, actor="a", change_type="created", now="2026-07-14T11:00:00")
+    entries = history.read("adr-0001", svc.root)
+    edit_entries = entries[1:]  # [0]=최초 created
+    assert len(edit_entries) >= 2  # 결정·대안 두 섹션이 각각 기록(유실 없음)
+    assert not any(e.summary.startswith("문서 생성") for e in edit_entries)
+
+
+def test_p3_http_save_request_has_no_change_type():
+    from hub.interfaces.http_api import SaveRequest
+
+    assert "change_type" not in SaveRequest.model_fields
+
+
+# ── P4: 저널 원자적 쓰기 + 잘린 JSON 관용 ───────────────────────────────
+def test_p4_load_tolerates_truncated_journal(tmp_path):
+    jp = paths.journal_path(tmp_path, "adr-0001")
+    jp.parent.mkdir(parents=True, exist_ok=True)
+    jp.write_text('{"op": "save", "id": "adr-00', encoding="utf-8")  # 잘린 JSON
+    assert journal.load("adr-0001", tmp_path) is None  # 예외 대신 None
+
+
+def test_p4_truncated_journal_does_not_break_startup(tmp_path):
+    save_document(_adr(), root=tmp_path, actor="a", now="2026-07-14T10:00:00")
+    jp = paths.journal_path(tmp_path, "adr-0001")
+    jp.parent.mkdir(parents=True, exist_ok=True)
+    jp.write_text('{"op": "sav', encoding="utf-8")  # 잘린 pending 저널
+    store = FileStore(tmp_path, Config())  # 크래시 없이 오픈·수렴
+    assert store.get_meta("adr-0001") is not None
+    store.close()
+
+
+def test_p4_journal_write_leaves_no_temp(tmp_path):
+    journal.begin("adr-0001", tmp_path, op="save")
+    assert list(paths.journal_dir(tmp_path).glob("*.tmp")) == []
+    assert paths.journal_path(tmp_path, "adr-0001").exists()
+
+
+# ── P5: index.sqlite 유실 → 재오픈 시 자동 복구 ─────────────────────────
+def test_p5_index_deletion_auto_recovered_on_open(tmp_path):
+    svc = KnowledgeService(tmp_path)
+    svc.save_document(_adr(), actor="a", now="2026-07-14T10:00:00")
+    svc.close()
+    paths.index_path(tmp_path).unlink()  # 인덱스만 삭제(문서 파일은 유지)
+
+    svc2 = KnowledgeService(tmp_path)  # 재오픈 → reconcile 이 docs/ 스캔으로 재색인
+    assert svc2.get_document("adr-0001") is not None
+    assert [d["id"] for d in svc2.list_documents()] == ["adr-0001"]
+    assert any(h["doc_id"] == "adr-0001" for h in svc2.search_knowledge("세션"))
+    svc2.close()
+
+
+# ── P6: target_type 경로순회로 임의 *.md 를 LLM 에 넣지 못한다 ───────────
+def test_p6_target_type_traversal_blocked():
+    from hub.service import _read_template
+
+    assert _read_template("adr")  # 허용 타입 → 템플릿 로드
+    assert _read_template("../README") == ""  # traversal 차단
+    assert _read_template("../../etc/passwd") == ""
+    assert _read_template("bogus") == ""  # 허용목록 밖
+
+
+# ── P7: 승인 제출 op 가 신규/편집을 정확히 반영 ─────────────────────────
+def test_p7_approval_op_reflects_existing_doc(tmp_path):
+    svc = _approval_svc(tmp_path)
+    r1 = svc.save_document(_adr(), actor="carol")
+    assert r1["op"] == "create"  # 신규
+    svc.approve_submission(r1["submission_id"], principal=admin("alice"),
+                           now="2026-07-14T10:00:00")
+
+    r2 = svc.save_document(_adr(decision="편집됨."), actor="carol")
+    assert r2["op"] == "edit"  # 기존 문서 편집
+    svc.close()

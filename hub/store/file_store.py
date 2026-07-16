@@ -29,11 +29,20 @@ class FileStore(Store):
     def __init__(self, root, config: Config):
         self.root = Path(root)
         self.config = config
+        # open_index 가 파일을 생성하므로 존재 여부는 그 **이전** 에 캡처한다.
+        index_existed = paths.index_path(self.root).exists()
         self.index = open_index(self.root, default_project=config.default_project)
-        # 하드 종료로 부분 save(이력/문서/스냅샷/인덱스 불일치)가 남았는지 pending 저널로 감지.
-        # 남아 있으면 기동 시 reconcile 로 수렴시킨다(저널 없으면 no-op — 정상 store 는 건너뜀).
-        if journal.pending(self.root):
+        # 부분 save(pending 저널)뿐 아니라 **인덱스 자체 유실/불일치** 도 감지해 수렴시킨다.
+        # index.sqlite 만 지우고 재기동하면 문서 파일은 남지만 목록/조회/검색이 전부 빈 결과가 되므로,
+        # 인덱스가 새로 생성됐거나(파일 부재) docs/ 문서 수와 어긋나면 reconcile 로 재색인한다.
+        if journal.pending(self.root) or not index_existed or self._index_stale():
             reconcile.run(self.root, self.config, index=self.index)
+
+    def _index_stale(self) -> bool:
+        """docs/ 의 문서 수와 인덱스 문서 수가 다르면 True (인덱스 유실·불일치 감지)."""
+        docs_dir = paths.docs_dir(self.root)
+        n_files = sum(1 for _ in docs_dir.glob("*/*.md")) if docs_dir.exists() else 0
+        return n_files != len(self.index.all_doc_ids())
 
     def close(self) -> None:
         self.index.close()
@@ -87,6 +96,8 @@ class FileStore(Store):
         return self.index.list_documents(filters, limit=limit, offset=offset)
 
     def read_history(self, doc_id: str) -> list[dict]:
+        if not paths.is_safe_doc_id(doc_id):  # 경로 주입 방어(서비스 존재검사에 더한 심층방어)
+            return []
         return [
             {
                 "ts": e.ts, "actor": e.actor, "type": e.type, "anchor": e.anchor,
@@ -96,6 +107,8 @@ class FileStore(Store):
         ]
 
     def read_docs_diff(self, doc_id: str, date: str | None = None) -> list[dict]:
+        if not paths.is_safe_doc_id(doc_id):  # glob('<id>.*.md') 주입 방어(심층방어)
+            return []
         d = paths.docs_diff_dir(self.root)
         if not d.exists():
             return []

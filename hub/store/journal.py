@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from . import paths
 
@@ -42,7 +43,11 @@ def load(doc_id: str, root) -> dict | None:
     p = paths.journal_path(root, doc_id)
     if not p.exists():
         return None
-    return json.loads(p.read_text(encoding="utf-8"))
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # 원자적 교체 이전에 쓰인 잘린 저널일 수 있다 → 기동 실패 대신 None(reconcile 전체스캔이 수렴).
+        return None
 
 
 def pending(root) -> list[str]:
@@ -58,6 +63,10 @@ def remove(doc_id: str, root) -> None:
 
 
 def _write(doc_id: str, root, j: dict) -> None:
+    # temp 기록 후 원자적 교체 — 쓰기 도중 크래시가 잘린 JSON 을 남겨 다음 기동의 load 를
+    # 깨뜨리는 것을 막는다(§6 crash-safety). same-dir rename 이라 원자성이 보장된다.
     p = paths.journal_path(root, doc_id)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, p)

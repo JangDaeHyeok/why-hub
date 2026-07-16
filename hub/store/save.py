@@ -119,11 +119,11 @@ def _save_locked(nd, doc_type, actor, change_type_arg, intended_diff, now_ts, ro
         # 6. diff + 앵커 귀속
         hunks = diffing.diff(old, nd.body)
 
-        # 7. change_type 확정 (인자 우선, 없으면 자동 판정)
+        # 7. change_type 확정 (인자 우선, 없으면 자동 판정). prev_fm 은 메타 delta 에도 쓰므로 항상 로드.
+        prev_fm = _read_prev_frontmatter(root, doc_id, index)
         if change_type_arg:
             ct = change_type_arg
         else:
-            prev_fm = _read_prev_frontmatter(root, doc_id, index)
             ct = history.determine_change_type(
                 snapshot_exists=(old is not None),
                 new_status=nd.frontmatter.get("status"),
@@ -132,10 +132,15 @@ def _save_locked(nd, doc_type, actor, change_type_arg, intended_diff, now_ts, ro
                 prev_supersedes=(prev_fm or {}).get("supersedes"),
             )
 
-        # 8. 이력 항목 생성 + append (변경 없으면 빈 목록 → append 스킵)
-        entries = history.build(doc_id, hunks, actor=actor, change_type=ct, ts=now_ts)
-        history_id = history.append(doc_id, entries, root)
+        # 8. 이력 항목 생성 + append. 본문 무변경(frontmatter-only) 전이도 메타 항목으로 기록.
+        #    ★저널 순서: 'history' step 은 append **이전(intent-first)** 에 기록한다 —
+        #    append 후 step 미기록 크래시로 고아 이력이 영구히 남는 것을 막는다(§6 crash-safety).
+        entries = history.build(
+            doc_id, hunks, actor=actor, change_type=ct, ts=now_ts,
+            meta_delta=history.frontmatter_delta(prev_fm, nd.frontmatter),
+        )
         journal.step(doc_id, root, j, "history")
+        history_id = history.append(doc_id, entries, root)
 
         # 9. 문서 본문 쓰기 (정규화된 최종본)
         doc_path.parent.mkdir(parents=True, exist_ok=True)

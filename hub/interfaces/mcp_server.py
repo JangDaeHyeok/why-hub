@@ -132,17 +132,17 @@ def build_mcp(service: KnowledgeService, verifier=None) -> FastMCP:
     @_tool(SCOPE_SUBMIT)
     def save_document(
         markdown: str,
-        change_type: str | None = None,
         intended_diff: str | None = None,
         project: str | None = None,
     ) -> dict:
-        """문서 저장 — save 루틴 경유. actor 는 JWT 주체(인자로 받지 않음). 승인 게이트 on 이면 제출."""
+        """문서 저장 — save 루틴 경유. actor 는 JWT 주체(인자로 받지 않음). 승인 게이트 on 이면 제출.
+
+        change_type 은 받지 않는다 — 저장 엔진이 자동 판정(클라이언트 이력 타입 위조 차단)."""
         p = _principal()
         try:
             res = service.save_document(
                 markdown,
                 actor=p.username,
-                change_type=change_type,
                 intended_diff=intended_diff,
                 project=project,
                 principal=p,

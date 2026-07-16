@@ -24,7 +24,7 @@ import yaml
 from .auth.principal import SCOPE_REVIEW, Principal, require_scope, require_write
 from .config import Config
 from .llm import LLMClient, LLMUnavailable
-from .models import SaveResult
+from .models import CHANGE_TYPES, DOC_TYPES, SaveResult
 from .store import anchors as anchors_mod
 from .store.base import Store
 from .store.lint import LintError, lint
@@ -53,6 +53,14 @@ _TYPE_PREFIX = {
 
 def _prefix_for(doc_type: str) -> str:
     return _TYPE_PREFIX.get(doc_type, "ref")
+
+
+def _validate_change_type(change_type: str | None) -> None:
+    """명시 change_type 은 허용 enum 만. 클라이언트가 임의 문자열/위조 타입을 이력에 심는 것을 차단.
+
+    None(미지정)은 통과 — 저장 엔진이 스냅샷·상태 전이로 자동 판정한다(외부 인터페이스 기본 경로)."""
+    if change_type and change_type not in CHANGE_TYPES:
+        raise LintError([f"허용되지 않은 change_type: {change_type!r} (허용: {list(CHANGE_TYPES)})"])
 
 
 def _version_hash(raw_markdown: str | None) -> str | None:
@@ -94,6 +102,10 @@ def _build_ingest_markdown(doc_id, doc_type, title, created, source_ref, content
 
 # ── AI 생성 (M8) 프롬프트 조립 (구현스펙-generate-M8.md §3, v0) ────────
 def _read_template(target_type: str) -> str:
+    # target_type 은 템플릿 경로에 결합되므로 허용 doc 타입만 통과(traversal 차단 — '../README' 등이
+    # 리포의 임의 *.md 를 LLM 프롬프트로 끌어오는 것을 막는다). 그 외는 기존 "없음" 관용대로 빈 문자열.
+    if target_type not in DOC_TYPES:
+        return ""
     tp = _TEMPLATES_DIR / f"{target_type}.md"
     return tp.read_text(encoding="utf-8") if tp.exists() else ""
 
@@ -293,6 +305,7 @@ class KnowledgeService:
         실제 반영은 언제나 `_reflect`(store.save_document 단일 경로)만 수행한다(CLAUDE.md §2-1).
         project 는 leaf(submit_change/_reflect)에서 frontmatter 에 반영한다.
         """
+        _validate_change_type(change_type)
         # 프로젝트 쓰기 권한 확인(editor). frontmatter 우회 방지 위해 '실제 저장될' 프로젝트로 검사.
         eff = self._effective_project(raw_markdown, project)
         self._assert_can_write(eff, principal)
@@ -303,8 +316,10 @@ class KnowledgeService:
             moving_id = None
         self._assert_can_move(moving_id, eff, principal)
         if self.config.approval.enabled:
+            # 기존 문서 여부로 op 결정 — 관리자가 승인함에서 변경 성격(생성/편집)을 정확히 보도록.
+            op = "edit" if (moving_id and self.store.get_meta(moving_id) is not None) else "create"
             return self.submit_change(
-                raw_markdown, actor=actor, change_type=change_type,
+                raw_markdown, actor=actor, op=op, change_type=change_type,
                 intended_diff=intended_diff, project=project, now=now, principal=principal,
             )
         return self._reflect(
@@ -356,6 +371,7 @@ class KnowledgeService:
         doc_id 는 markdown frontmatter 에서 도출(인자로 온 값 우선). id 없으면 LintError.
         제출 시점 참고용 prelint 를 함께 저장(권위 있는 lint 는 승인 시 실제 save 가 수행).
         """
+        _validate_change_type(change_type)
         now_ts = now or _now()
         # '실제 저장될' 프로젝트로 통일(제출 메타·저장·ACL 검사 일치, frontmatter 우회 방지).
         resolved_project = self._effective_project(raw_markdown, project)
@@ -583,6 +599,11 @@ class KnowledgeService:
         principal: Principal | None = None,
     ) -> list[dict]:
         """delta/summary/actor 타임라인(시간순). anchor 필터·limit(최근 N) 지원. ACL: 접근 불가면 빈 목록."""
+        # 존재하지 않는 id 는 ACL 을 통과하지만(=미존재→통과), read_history 가 id 를 파일 경로로
+        # 그대로 쓰므로 traversal(예: '../history/adr-0001') 로 타 프로젝트 이력이 노출될 수 있다.
+        # 메타 없는 id 는 즉시 빈 목록으로 종료(존재 노출·경로 주입 차단).
+        if self.store.get_meta(doc_id) is None:
+            return []
         if not self._doc_readable(doc_id, principal):
             return []
         entries = self.store.read_history(doc_id)
@@ -596,6 +617,10 @@ class KnowledgeService:
         self, doc_id: str, *, date: str | None = None, principal: Principal | None = None
     ) -> list[dict]:
         """의도된 변경(docs-diff) 목록. date 지정 시 해당 날짜만. ACL: 접근 불가면 빈 목록."""
+        # 미존재 id 는 ACL 통과 후 glob 패턴('<id>.*.md')으로 쓰이므로 '*' 같은 입력이 전 프로젝트
+        # docs-diff 를 훑을 수 있다. 메타 없는 id 는 즉시 빈 목록으로 종료(경로/glob 주입 차단).
+        if self.store.get_meta(doc_id) is None:
+            return []
         if not self._doc_readable(doc_id, principal):
             return []
         return self.store.read_docs_diff(doc_id, date=date)

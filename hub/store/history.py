@@ -51,6 +51,25 @@ def _newly_appeared(prev, new) -> bool:
     return bool(_as_set(new) - _as_set(prev))
 
 
+def frontmatter_delta(prev_fm: dict | None, new_fm: dict | None) -> str:
+    """이전/현재 frontmatter 의 변경 필드를 git-diff 스타일 `-`/`+` 로 직렬화.
+
+    `updated` 는 매 저장마다 바뀌므로 제외한다. 본문 변경 없는 메타 전이(폐기/상태/제목/태그)의
+    'delta(무엇)' 근거로 이력에 남긴다."""
+    prev = prev_fm or {}
+    new = new_fm or {}
+    lines: list[str] = []
+    for k in sorted((set(prev) | set(new)) - {"updated"}):
+        pv, nv = prev.get(k), new.get(k)
+        if pv == nv:
+            continue
+        if k in prev:
+            lines.append(f"- {k}: {pv}")
+        if k in new:
+            lines.append(f"+ {k}: {nv}")
+    return "\n".join(lines)
+
+
 def build(
     doc_id: str,
     hunks: list[DiffHunk],
@@ -58,13 +77,16 @@ def build(
     actor: str,
     change_type: str,
     ts: str,
+    meta_delta: str | None = None,
     summary_source: str = "rule",
 ) -> list[HistoryEntry]:
-    """DiffHunk 목록 → HistoryEntry 목록. created 는 문서 단위 1항목."""
+    """DiffHunk 목록 → HistoryEntry 목록. created 는 문서 단위 1항목, 본문무변경은 메타 1항목."""
     # 전체 추가(최초 저장/손상 복구/인제스천 신규) → 문서 단위 1항목.
-    if change_type == "created" or (hunks and hunks[0].created):
-        h = hunks[0] if hunks else None
-        added = h.added if h else []
+    # 판별은 **diff 의 created 플래그(권위 신호)만** 사용한다 — 클라이언트가 change_type="created"
+    # 를 위조해 편집을 '생성'으로 뭉개(멀티훅→첫훅) 이력을 왜곡하는 것을 막는다.
+    if hunks and hunks[0].created:
+        h = hunks[0]
+        added = h.added
         entry_type = change_type or "created"  # ingest 신규면 type=ingest 로 프로버넌스 보존
         label = {"created": "문서 생성", "ingest": "인제스천"}.get(entry_type, entry_type)
         return [
@@ -72,32 +94,56 @@ def build(
                 ts=ts,
                 actor=actor,
                 type=entry_type,
-                anchor=(h.anchor if h else ""),
+                anchor=h.anchor,
                 summary=f"{label} ({len(added)}개 줄)",
                 summary_source=summary_source,
                 delta="\n".join(f"+ {line}" for line in added),
             )
         ]
 
-    entries: list[HistoryEntry] = []
-    for h in hunks:
-        delta = "\n".join(
-            [f"- {line}" for line in h.removed] + [f"+ {line}" for line in h.added]
-        )
-        where = f"'{h.anchor}' 섹션 " if h.anchor else ""
-        summary = f"{where}변경 (+{len(h.added)}/-{len(h.removed)} 줄)"
-        entries.append(
+    if hunks:
+        entries: list[HistoryEntry] = []
+        for h in hunks:
+            delta = "\n".join(
+                [f"- {line}" for line in h.removed] + [f"+ {line}" for line in h.added]
+            )
+            where = f"'{h.anchor}' 섹션 " if h.anchor else ""
+            summary = f"{where}변경 (+{len(h.added)}/-{len(h.removed)} 줄)"
+            entries.append(
+                HistoryEntry(
+                    ts=ts,
+                    actor=actor,
+                    type=change_type,
+                    anchor=h.anchor,
+                    summary=summary,
+                    summary_source=summary_source,
+                    delta=delta,
+                )
+            )
+        return entries
+
+    # 본문 변경 없음(frontmatter-only) — 폐기/상태/제목/태그 등 메타 전이도 이력에 남긴다.
+    # 단, **실제 frontmatter 변경이 있을 때만**(meta_delta 비어있지 않음) — 동일 내용 재저장 같은
+    # 순수 no-op 은 기록하지 않는다(updated 만 바뀌는 것은 meta_delta 에서 제외됨).
+    # (신규는 위 created 분기가 처리하므로 여기 오는 'created' 는 실질 신규가 아님 → 제외.)
+    if meta_delta and change_type != "created":
+        label = {
+            "deprecation": "폐기 처리",
+            "supersede": "상위 문서로 대체",
+            "ingest": "인제스천(메타 갱신)",
+        }.get(change_type, "메타데이터 변경")
+        return [
             HistoryEntry(
                 ts=ts,
                 actor=actor,
                 type=change_type,
-                anchor=h.anchor,
-                summary=summary,
+                anchor="",
+                summary=label,
                 summary_source=summary_source,
-                delta=delta,
+                delta=meta_delta or "",
             )
-        )
-    return entries
+        ]
+    return []
 
 
 def _entry_to_dict(e: HistoryEntry) -> dict:

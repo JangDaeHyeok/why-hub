@@ -30,6 +30,21 @@ SUBMISSIONS_DIR = ".submissions"
 INDEX_FILE = "index.sqlite"
 
 
+def is_safe_doc_id(doc_id: str | None) -> bool:
+    """id 를 문서/스냅샷/이력/락/저널 경로·glob 에 삽입해도 안전한가(traversal 차단).
+
+    id 는 경로 구성요소·glob 패턴에 그대로 쓰이므로 경로 구분자·상위경로·제어문자·glob
+    메타문자·공백을 금지한다. 쓰기측 lint(스키마 정규식)와 읽기측(store)이 공유하는 최소 안전 술어."""
+    if not doc_id:
+        return False
+    sid = str(doc_id)
+    return not (
+        "/" in sid or "\\" in sid or ".." in sid
+        or sid.startswith(".") or "\x00" in sid or sid.strip() != sid
+        or any(c in sid for c in "*?[]")
+    )
+
+
 def root(base: str | Path) -> Path:
     """저장소 루트를 Path 로 정규화한다."""
     return Path(base)

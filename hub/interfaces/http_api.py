@@ -30,10 +30,12 @@ from ..store.normalize import normalize
 
 
 class SaveRequest(BaseModel):
-    """PUT /docs/{id} 요청 바디. actor 는 인증 세션에서 채운다(바디로 받지 않음)."""
+    """PUT /docs/{id} 요청 바디. actor 는 인증 세션에서 채운다(바디로 받지 않음).
+
+    change_type 은 받지 않는다 — 저장 엔진이 스냅샷·상태 전이로 자동 판정한다(클라이언트가 이력
+    타입을 위조하지 못하게). 폐기/대체 등은 frontmatter status/supersedes 변경으로 자동 감지된다."""
 
     markdown: str
-    change_type: str | None = None
     intended_diff: str | None = None
     project: str | None = None
 
@@ -219,7 +221,6 @@ def build_app(service: KnowledgeService, auth=None) -> FastAPI:
         res = service.save_document(
             req.markdown,
             actor=principal.username,
-            change_type=req.change_type,
             intended_diff=req.intended_diff,
             project=req.project,
             principal=principal,

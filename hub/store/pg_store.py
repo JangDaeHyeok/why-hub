@@ -186,7 +186,10 @@ class PostgresStore(Store):
                     prev_supersedes=prev_supersedes,
                 )
 
-            entries = history_mod.build(doc_id, hunks, actor=actor, change_type=ct, ts=now_ts)
+            entries = history_mod.build(
+                doc_id, hunks, actor=actor, change_type=ct, ts=now_ts,
+                meta_delta=history_mod.frontmatter_delta(prev_fm, nd.frontmatter),
+            )
             history_id = entries[0].ts if entries else None
             for e in entries:
                 cur.execute(

@@ -17,6 +17,7 @@ from typing import Callable
 from ..config import Config
 from ..models import DOC_STATUSES, DOC_TYPES
 from . import anchors as anchors_mod
+from . import paths
 from .normalize import NormalizedDoc, normalize
 
 REQUIRED_FM = ("id", "type", "title", "status", "created")
@@ -76,10 +77,7 @@ def _lint_schema(fm, config, exists_fn) -> list[str]:
         # 경로 안전성: id 는 문서/스냅샷/이력/락/저널 경로에 그대로 삽입되므로,
         # 설정 정규식과 **무관하게** 경로 구분자·상위경로·제어문자를 금지한다(traversal 차단).
         sid = str(doc_id)
-        if (
-            "/" in sid or "\\" in sid or ".." in sid
-            or sid.startswith(".") or "\x00" in sid or sid.strip() != sid or not sid
-        ):
+        if not paths.is_safe_doc_id(sid):
             reasons.append(f"id 에 경로 구분자/상위경로/제어문자 불가: {doc_id!r}")
         elif dtype in DOC_TYPES:
             pat = config.id_pattern(dtype)
