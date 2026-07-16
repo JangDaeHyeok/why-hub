@@ -107,7 +107,7 @@ class ChatOrchestrator:
     # ── 세션 ──────────────────────────────────────────────────────────
     def new_session(
         self, *, actor: str = "anonymous", target_type: str = "adr",
-        project: str | None = None,
+        project: str | None = None, principal=None,
     ) -> str:
         sid = uuid.uuid4().hex
         self.sessions[sid] = {
@@ -116,19 +116,34 @@ class ChatOrchestrator:
             "actor": actor,
             "target_type": target_type,
             "project": project,  # 이 세션이 작업 중인 프로젝트(읽기 도구·제안 스코프)
+            "principal": principal,  # 읽기/쓰기 ACL 적용용(프로젝트 권한)
+            # 생성 사용자에 고정(immutable) — 이후 턴/적용에서 호출자가 다르면 거부(세션 탈취 방지).
+            "owner_user_id": getattr(principal, "user_id", None),
         }
         return sid
 
     def get(self, session_id: str) -> dict | None:
         return self.sessions.get(session_id)
 
+    @staticmethod
+    def _assert_owner(sess: dict, principal) -> None:
+        """세션 소유자(생성 사용자)만 접근 허용. 다른 사용자가 기존 session_id 를 넘겨 세션·staged
+        변경을 탈취하는 것을 막는다. 소유자 없는(로컬/무인증) 세션이나 principal 미지정은 통과."""
+        owner = sess.get("owner_user_id")
+        caller = getattr(principal, "user_id", None)
+        if owner is not None and caller is not None and caller != owner:
+            raise PermissionError("세션 소유자만 이 대화에 접근할 수 있습니다.")
+
     # ── 대화 턴 ────────────────────────────────────────────────────────
-    def _prepare(self, session_id, user_message, actor, target_type, project):
+    def _prepare(self, session_id, user_message, actor, target_type, project, principal=None):
         if session_id is None or session_id not in self.sessions:
             session_id = self.new_session(
-                actor=actor, target_type=target_type, project=project
+                actor=actor, target_type=target_type, project=project, principal=principal
             )
         sess = self.sessions[session_id]
+        self._assert_owner(sess, principal)  # 세션 탈취 방지 — 소유자 불일치면 거부
+        if principal is not None:
+            sess["principal"] = principal  # 멤버십 변경 반영(동일 소유자일 때만 도달)
         sess["messages"].append({"role": "user", "content": user_message})
         return session_id, sess
 
@@ -156,12 +171,12 @@ class ChatOrchestrator:
     def turn(
         self, session_id: str | None, user_message: str,
         *, actor: str = "anonymous", target_type: str = "adr",
-        project: str | None = None, llm=None,
+        project: str | None = None, llm=None, principal=None,
     ) -> dict:
         """비스트리밍 1턴 → {session_id, reply, staged}. (테스트·no-JS 폴백 경로.)"""
         client = llm if llm is not None else self.service._llm_client()
         session_id, sess = self._prepare(
-            session_id, user_message, actor, target_type, project
+            session_id, user_message, actor, target_type, project, principal
         )
         fallback = _drain(self._tool_phase(sess, client))
         reply = fallback if fallback else "(대화를 정리해 주세요.)"
@@ -171,7 +186,7 @@ class ChatOrchestrator:
     def turn_stream(
         self, session_id: str | None, user_message: str,
         *, actor: str = "anonymous", target_type: str = "adr",
-        project: str | None = None, llm=None,
+        project: str | None = None, llm=None, principal=None,
     ):
         """스트리밍 1턴. 도구 해결(non-stream) 후 최종 답변을 stream=True 로 토큰 yield.
 
@@ -180,7 +195,7 @@ class ChatOrchestrator:
         """
         client = llm if llm is not None else self.service._llm_client()
         session_id, sess = self._prepare(
-            session_id, user_message, actor, target_type, project
+            session_id, user_message, actor, target_type, project, principal
         )
         yield {"type": "session", "session_id": session_id}
         # 도구 해결 단계(stream=False) — 도구 진행 이벤트를 그대로 전달, 폴백 content 를 회수.
@@ -196,11 +211,13 @@ class ChatOrchestrator:
                "session_id": session_id}
 
     # ── 적용 → 승인 큐 제출 ────────────────────────────────────────────
-    def apply(self, session_id: str, *, actor: str) -> list[dict]:
+    def apply(self, session_id: str, *, actor: str, principal=None) -> list[dict]:
         """staged 변경을 각각 승인 큐에 제출(submit_change). 제출 후 staged 를 비운다."""
         sess = self.sessions.get(session_id)
         if not sess:
             raise KeyError(f"세션 없음: {session_id}")
+        self._assert_owner(sess, principal)  # 세션 탈취 방지 — 소유자만 적용(제출) 가능
+        principal = principal if principal is not None else sess.get("principal")
         # 성공한 항목만 staged 에서 제거한다. 중간 실패 시 이미 제출된 항목이 남아 있으면
         # 재시도(/chat/apply)가 그것들을 중복 제출하므로, 각 성공 직후 pop 한다(재시도 안전).
         submissions = []
@@ -210,7 +227,7 @@ class ChatOrchestrator:
             sub = self.service.submit_change(
                 item["markdown"], actor=actor, op=item["op"],
                 doc_id=item.get("doc_id"), project=item.get("project"),
-                intended_diff=item.get("intended_diff"),
+                intended_diff=item.get("intended_diff"), principal=principal,
             )
             submissions.append(sub)
             staged.pop(0)  # 성공 후에만 제거 → 실패 항목은 맨 앞에 남아 재시도가 그것부터 재개
@@ -220,21 +237,23 @@ class ChatOrchestrator:
     def _exec_tool(self, sess: dict, name: str, args: dict) -> str:
         svc = self.service
         project = sess.get("project")  # 현재 프로젝트로 읽기 도구 스코프
+        principal = sess.get("principal")  # 프로젝트 ACL 적용
         try:
             if name == "search_knowledge":
                 res = svc.search_knowledge(
-                    args.get("query", ""), None, args.get("k", 10), project=project
+                    args.get("query", ""), None, args.get("k", 10),
+                    project=project, principal=principal,
                 )
             elif name == "get_document":
-                res = svc.get_document(args.get("id", ""))
+                res = svc.get_document(args.get("id", ""), principal=principal)
             elif name == "get_history":
-                res = svc.get_history(args.get("id", ""))
+                res = svc.get_history(args.get("id", ""), principal=principal)
             elif name == "get_related":
-                res = svc.get_related(args.get("id", ""))
+                res = svc.get_related(args.get("id", ""), principal=principal)
             elif name == "list_documents":
                 filters = {k: v for k, v in (("type", args.get("type")),
                            ("status", args.get("status"))) if v}
-                res = svc.list_documents(filters or None, project=project)
+                res = svc.list_documents(filters or None, project=project, principal=principal)
             elif name == "get_template":
                 res = {"template": svc.read_template(args.get("target_type", ""))}
             elif name == "lint_check":
@@ -268,7 +287,8 @@ class ChatOrchestrator:
                 "intended_diff": intended_diff, "prelint": prelint}
 
     def _stage_deprecate(self, sess: dict, doc_id: str, reason: str, superseded_by) -> dict:
-        raw = self.service.get_raw(doc_id)
+        # 프로젝트 ACL 적용 — 접근 불가 문서는 미존재와 동일(원문이 staged 로 유출되는 것 방지).
+        raw = self.service.get_raw(doc_id, principal=sess.get("principal"))
         if raw is None:
             return {"error": f"문서 없음: {doc_id}"}
         markdown = _set_deprecated(raw, superseded_by)

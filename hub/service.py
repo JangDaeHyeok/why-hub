@@ -21,6 +21,7 @@ from pathlib import Path
 
 import yaml
 
+from .auth.principal import SCOPE_REVIEW, Principal, require_scope, require_write
 from .config import Config
 from .llm import LLMClient, LLMUnavailable
 from .models import SaveResult
@@ -211,6 +212,69 @@ class KnowledgeService:
         )
         return f"---\n{front}---\n\n{nd.body.strip()}\n"
 
+    # ── 프로젝트 ACL 헬퍼 (필터-선행 §2-6) ─────────────────────────────
+    def _scope_readable(self, filters: dict | None, principal: Principal | None) -> dict | None:
+        """읽기 필터에 principal 의 접근 가능 프로젝트 집합을 주입(검색·목록 — store 호출 전)."""
+        if principal is None:
+            return filters
+        readable = principal.readable_projects(self.config.default_project)
+        if readable is None:  # admin/전권 → 필터 생략
+            return filters
+        return {**(filters or {}), "project__in": sorted(readable)}
+
+    def _doc_readable(self, doc_id: str, principal: Principal | None) -> bool:
+        """단건 문서의 project 를 principal 이 읽을 수 있는지(없는 문서는 통과 → 호출측 404)."""
+        if principal is None:
+            return True
+        meta = self.store.get_meta(doc_id)
+        if meta is None:
+            return True
+        proj = meta.get("project") or self.config.default_project
+        return principal.can_read(proj, self.config.default_project)
+
+    def _effective_project(self, raw_markdown: str, project: str | None) -> str:
+        """실제로 저장될 프로젝트(= inject 후 frontmatter 기준). ACL 검사는 이 값으로 해야
+        frontmatter 에 project 를 심어 스코프를 우회하는 것을 막는다.
+
+        _inject_project 는 resolved!=default 일 때만 frontmatter 를 덮으므로, resolved==default 인
+        경우 frontmatter 의 project 가 그대로 저장된다(둘의 괴리가 생기는 지점)."""
+        resolved = self._resolve_project(raw_markdown, project)
+        injected = self._inject_project(raw_markdown, resolved)
+        try:
+            fmp = normalize(injected).frontmatter.get("project")
+        except Exception:
+            fmp = None
+        return fmp or self.config.default_project
+
+    def _assert_can_write(self, resolved_project: str, principal: Principal | None) -> None:
+        """쓰기 전 프로젝트 editor 권한 확인(principal 없으면 내부 호출 — 전권)."""
+        if principal is None:
+            return
+        require_write(principal, resolved_project, self.config.default_project)
+
+    def _current_project_of(self, doc_id: str | None) -> str | None:
+        """기존 문서의 **현재** project(없으면 None). 전역 id 는 프로젝트 간 유일하지 않으므로
+        같은 id 의 기존 문서가 다른 프로젝트에 있을 수 있다."""
+        if not doc_id:
+            return None
+        meta = self.store.get_meta(doc_id)
+        if meta is None:
+            return None
+        return meta.get("project") or self.config.default_project
+
+    def _assert_can_move(
+        self, doc_id: str | None, dest_project: str, principal: Principal | None
+    ) -> None:
+        """기존 문서를 다른 프로젝트로 옮기는 쓰기라면 **원본 프로젝트에도** editor 권한을 요구한다.
+
+        전역 id 가 같은 타 프로젝트 문서를 목적지 project 만 검사해 덮어쓰며 이동시키는 우회를
+        차단한다(크로스프로젝트 이동 = 원본·목적지 양쪽 쓰기권한 필요). principal 없으면 내부 전권."""
+        if principal is None:
+            return
+        origin = self._current_project_of(doc_id)
+        if origin is not None and origin != dest_project:
+            require_write(principal, origin, self.config.default_project)
+
     # ── 쓰기 ──────────────────────────────────────────────────────────
     def save_document(
         self,
@@ -221,6 +285,7 @@ class KnowledgeService:
         intended_diff: str | None = None,
         project: str | None = None,
         now: str | None = None,
+        principal: Principal | None = None,
     ) -> SaveResult | dict:
         """모든 쓰기의 진입점. 승인 게이트가 켜져 있으면 즉시 반영 대신 **승인 큐에 제출**하고
         제출 dict 를 반환한다(구현스펙-승인워크플로우.md). 꺼져 있으면 즉시 반영해 SaveResult 를 반환.
@@ -228,10 +293,19 @@ class KnowledgeService:
         실제 반영은 언제나 `_reflect`(store.save_document 단일 경로)만 수행한다(CLAUDE.md §2-1).
         project 는 leaf(submit_change/_reflect)에서 frontmatter 에 반영한다.
         """
+        # 프로젝트 쓰기 권한 확인(editor). frontmatter 우회 방지 위해 '실제 저장될' 프로젝트로 검사.
+        eff = self._effective_project(raw_markdown, project)
+        self._assert_can_write(eff, principal)
+        # 기존 문서를 다른 프로젝트로 옮기는 경우 원본 프로젝트 쓰기권한도 요구(우회 차단).
+        try:
+            moving_id = normalize(raw_markdown).id
+        except Exception:
+            moving_id = None
+        self._assert_can_move(moving_id, eff, principal)
         if self.config.approval.enabled:
             return self.submit_change(
                 raw_markdown, actor=actor, change_type=change_type,
-                intended_diff=intended_diff, project=project, now=now,
+                intended_diff=intended_diff, project=project, now=now, principal=principal,
             )
         return self._reflect(
             raw_markdown,
@@ -253,7 +327,7 @@ class KnowledgeService:
         now: str | None = None,
     ) -> SaveResult:
         """실제 반영 — store.reflect(신뢰 경로). 승인 시·게이트 off 에서만 호출된다."""
-        resolved = self._resolve_project(raw_markdown, project)
+        resolved = self._effective_project(raw_markdown, project)
         raw_markdown = self._inject_project(raw_markdown, resolved)
         return self.store.reflect(
             raw_markdown,
@@ -275,6 +349,7 @@ class KnowledgeService:
         intended_diff: str | None = None,
         project: str | None = None,
         now: str | None = None,
+        principal: Principal | None = None,
     ) -> dict:
         """쓰기를 승인 대기 큐에 제출. 지식 store·인덱스는 건드리지 않는다.
 
@@ -282,7 +357,9 @@ class KnowledgeService:
         제출 시점 참고용 prelint 를 함께 저장(권위 있는 lint 는 승인 시 실제 save 가 수행).
         """
         now_ts = now or _now()
-        resolved_project = self._resolve_project(raw_markdown, project)
+        # '실제 저장될' 프로젝트로 통일(제출 메타·저장·ACL 검사 일치, frontmatter 우회 방지).
+        resolved_project = self._effective_project(raw_markdown, project)
+        self._assert_can_write(resolved_project, principal)
         raw_markdown = self._inject_project(raw_markdown, resolved_project)
         try:
             nd = normalize(raw_markdown, now=now_ts)
@@ -295,6 +372,8 @@ class KnowledgeService:
         # frontmatter id 이므로, 큐에 표시된 doc_id 와 반영 결과가 달라지는 것을 막는다.
         if doc_id and nd.id and doc_id != nd.id:
             raise LintError([f"제출 target id 불일치: 지정 {doc_id} ≠ 문서 frontmatter {nd.id}"])
+        # 기존 문서를 다른 프로젝트로 옮기는 제출이면 원본 프로젝트 쓰기권한도 요구(우회 차단).
+        self._assert_can_move(resolved_id, resolved_project, principal)
         # 제출 시점 문서 버전(내용 해시)을 기준값으로 캡처(신규 문서는 None). 승인 시 현재 버전과
         # 대조해, 같은 기준에서 갈라진 다른 제출이 먼저 승인됐다면 이 제출을 충돌로 거부한다
         # (동일 문서 동시 편집이 서로를 덮어써 승인된 변경이 유실되는 것 방지).
@@ -328,20 +407,29 @@ class KnowledgeService:
         default = self.config.default_project
         return [s for s in subs if (s.get("project") or default) == project]
 
-    def list_projects(self) -> list[str]:
-        """인덱스에 존재하는 project 목록(UI 셀렉터·API용)."""
-        return self.store.list_projects()
+    def list_projects(self, *, principal: Principal | None = None) -> list[str]:
+        """인덱스에 존재하는 project 목록(UI 셀렉터·API용). principal 이 접근 가능한 것만."""
+        projs = self.store.list_projects()
+        if principal is None:
+            return projs
+        readable = principal.readable_projects(self.config.default_project)
+        if readable is None:
+            return projs
+        return [p for p in projs if p in readable]
 
     def get_submission(self, sub_id: str) -> dict | None:
         return self.store.read_submission(sub_id)
 
-    def approve_submission(self, sub_id: str, *, approver: str, now: str | None = None) -> SaveResult:
-        """관리자만 승인 가능. pending 제출을 실제 반영(store.save_document)하고 approved 로 표기.
+    def approve_submission(
+        self, sub_id: str, *, principal: Principal, now: str | None = None
+    ) -> SaveResult:
+        """knowledge:review scope(admin)만 승인 가능. pending 제출을 실제 반영하고 approved 로 표기.
 
+        인가는 인터페이스 독립 Principal + 공유 policy 로 강제(제거한 config.is_admin 대체).
         lint 실패 시 제출은 pending 유지, 지식 store 는 변경되지 않는다(LintError 전파).
         """
-        if not self.config.is_admin(approver):
-            raise PermissionError(f"승인 권한 없음: {approver}")
+        require_scope(principal, SCOPE_REVIEW)
+        approver = principal.username
         now_ts = now or _now()
         with self.store.submissions_lock():
             sub = self.store.read_submission(sub_id)
@@ -349,6 +437,12 @@ class KnowledgeService:
                 raise KeyError(f"제출 없음: {sub_id}")
             if sub["status"] != "pending":
                 raise ValueError(f"이미 처리된 제출: {sub_id} ({sub['status']})")
+            # 리뷰어는 해당 제출의 프로젝트에 쓰기 권한이 있어야 한다(admin=전권).
+            dest_project = sub.get("project") or self.config.default_project
+            require_write(principal, dest_project, self.config.default_project)
+            # 승인 시점에도 원본(현재 문서의) 프로젝트가 목적지와 다르면 그 프로젝트 쓰기권한을
+            # 요구한다 — 크로스프로젝트 이동을 원본·목적지 양쪽 권한 없이 승인하지 못하게(우회 차단).
+            self._assert_can_move(sub["doc_id"], dest_project, principal)
             current_raw = self.store.get_raw(sub["doc_id"])
             current_hash = _version_hash(current_raw)
             # 멱등 복구 — 반영(_reflect 커밋)은 됐는데 상태 갱신 전에 크래시하면 문서는 적용됐고
@@ -387,11 +481,11 @@ class KnowledgeService:
             return res
 
     def reject_submission(
-        self, sub_id: str, *, approver: str, note: str = "", now: str | None = None
+        self, sub_id: str, *, principal: Principal, note: str = "", now: str | None = None
     ) -> dict:
-        """관리자만 반려 가능. pending 제출을 rejected 로 표기(반영 없음)."""
-        if not self.config.is_admin(approver):
-            raise PermissionError(f"반려 권한 없음: {approver}")
+        """knowledge:review scope(admin)만 반려 가능. pending 제출을 rejected 로 표기(반영 없음)."""
+        require_scope(principal, SCOPE_REVIEW)
+        approver = principal.username
         now_ts = now or _now()
         with self.store.submissions_lock():
             sub = self.store.read_submission(sub_id)
@@ -399,6 +493,8 @@ class KnowledgeService:
                 raise KeyError(f"제출 없음: {sub_id}")
             if sub["status"] != "pending":
                 raise ValueError(f"이미 처리된 제출: {sub_id} ({sub['status']})")
+            require_write(principal, sub.get("project") or self.config.default_project,
+                          self.config.default_project)
             return self.store.set_submission_status(
                 sub_id, status="rejected", reviewer=approver, note=note, now=now_ts,
             )
@@ -406,17 +502,19 @@ class KnowledgeService:
     # ── 읽기 ──────────────────────────────────────────────────────────
     def search_knowledge(
         self, query: str, filters: dict | None = None, k: int = 10,
-        *, project: str | None = None,
+        *, project: str | None = None, principal: Principal | None = None,
     ) -> list[dict]:
         """유사 RAG 검색(필터→FTS→bm25). 결과에 출처(id+anchor)+frontmatter 요약.
 
-        project 지정 시 그 프로젝트로 스코프(필터-선행, §2-6). None 이면 전체 프로젝트."""
+        project 지정 시 그 프로젝트로 스코프. principal 접근 가능 프로젝트로 ACL 필터(둘 다 필터-선행 §2-6).
+        None 이면 전체(접근 가능 범위)."""
         # 자유 입력을 dialect-중립 토큰으로(구문 특수문자로 500 나는 것 방지, C6). 결합은 스토어가.
         tokens = _query_tokens(query)
         if not tokens:
             return []
         if project is not None:
             filters = {**(filters or {}), "project": project}
+        filters = self._scope_readable(filters, principal)  # ACL: 검색 전 프로젝트 집합 제한
         hits = self.store.search(tokens, filters, k, mode="and")
         out: list[dict] = []
         for h in hits:
@@ -434,12 +532,16 @@ class KnowledgeService:
             )
         return out
 
-    def get_document(self, doc_id: str) -> dict | None:
-        """문서 원문 + frontmatter + 앵커 목록. 없으면 None. (백엔드 중립 조립.)"""
+    def get_document(self, doc_id: str, *, principal: Principal | None = None) -> dict | None:
+        """문서 원문 + frontmatter + 앵커 목록. 없거나 접근 불가면 None. (백엔드 중립 조립.)"""
         raw = self.store.get_raw(doc_id)
         if raw is None:
             return None
         nd = normalize(raw)
+        if principal is not None:
+            proj = nd.frontmatter.get("project") or self.config.default_project
+            if not principal.can_read(proj, self.config.default_project):
+                return None  # 접근 불가 → 존재 노출 없이 404
         anchs = [
             {"slug": a.slug, "text": a.text, "level": a.level, "path": a.path}
             for a in anchors_mod.parse_anchors(nd.body)
@@ -460,23 +562,29 @@ class KnowledgeService:
             "anchors": anchs,
         }
 
-    def get_raw(self, doc_id: str) -> str | None:
-        """문서의 정규화된 원문(마크다운)을 그대로 반환 — 편집 UI 로 로드용. 없으면 None."""
+    def get_raw(self, doc_id: str, *, principal: Principal | None = None) -> str | None:
+        """문서의 정규화된 원문(마크다운)을 그대로 반환 — 편집 UI 로 로드용. 없거나 접근 불가면 None."""
+        if not self._doc_readable(doc_id, principal):
+            return None
         return self.store.get_raw(doc_id)
 
     def list_documents(
         self, filters: dict | None = None, *, limit: int | None = None, offset: int = 0,
-        project: str | None = None,
+        project: str | None = None, principal: Principal | None = None,
     ) -> list[dict]:
-        """문서 메타 목록. project 지정 시 그 프로젝트로 스코프."""
+        """문서 메타 목록. project 지정 시 그 프로젝트로 스코프. principal 접근 가능 범위로 ACL 필터."""
         if project is not None:
             filters = {**(filters or {}), "project": project}
+        filters = self._scope_readable(filters, principal)  # ACL(필터-선행)
         return self.store.list_documents(filters, limit=limit, offset=offset)
 
     def get_history(
-        self, doc_id: str, *, anchor: str | None = None, limit: int | None = None
+        self, doc_id: str, *, anchor: str | None = None, limit: int | None = None,
+        principal: Principal | None = None,
     ) -> list[dict]:
-        """delta/summary/actor 타임라인(시간순). anchor 필터·limit(최근 N) 지원."""
+        """delta/summary/actor 타임라인(시간순). anchor 필터·limit(최근 N) 지원. ACL: 접근 불가면 빈 목록."""
+        if not self._doc_readable(doc_id, principal):
+            return []
         entries = self.store.read_history(doc_id)
         if anchor is not None:
             entries = [e for e in entries if e["anchor"] == anchor]
@@ -484,17 +592,24 @@ class KnowledgeService:
             entries = entries[-limit:]
         return entries
 
-    def get_docs_diff(self, doc_id: str, *, date: str | None = None) -> list[dict]:
-        """의도된 변경(docs-diff) 목록. date 지정 시 해당 날짜만."""
+    def get_docs_diff(
+        self, doc_id: str, *, date: str | None = None, principal: Principal | None = None
+    ) -> list[dict]:
+        """의도된 변경(docs-diff) 목록. date 지정 시 해당 날짜만. ACL: 접근 불가면 빈 목록."""
+        if not self._doc_readable(doc_id, principal):
+            return []
         return self.store.read_docs_diff(doc_id, date=date)
 
     # ── 계보 (P11) ────────────────────────────────────────────────────
-    def get_related(self, doc_id: str) -> dict | None:
+    def get_related(self, doc_id: str, *, principal: Principal | None = None) -> dict | None:
         """결정의 계보. supersedes 는 체인(정방향/역방향), related 는 직접 양방향. 순환 방지.
 
-        반환: {id, supersedes[], superseded_by[], related[]}. 문서 없으면 None.
+        반환: {id, supersedes[], superseded_by[], related[]}. 문서 없거나 접근 불가면 None.
+        계보에 포함된 타 문서 id 는 principal 이 읽을 수 있는 것만 노출(교차 프로젝트 누출 방지).
         """
         if self.store.get_meta(doc_id) is None:
+            return None
+        if not self._doc_readable(doc_id, principal):
             return None
 
         supersedes, related = self._relation_maps()
@@ -509,11 +624,16 @@ class KnowledgeService:
                 rel.add(other)
         rel.discard(doc_id)
 
+        def _visible(ids: list[str]) -> list[str]:
+            if principal is None:
+                return ids
+            return [i for i in ids if self._doc_readable(i, principal)]
+
         return {
             "id": doc_id,
-            "supersedes": _chain(doc_id, supersedes),
-            "superseded_by": _chain(doc_id, superseded_by),
-            "related": sorted(rel),
+            "supersedes": _visible(_chain(doc_id, supersedes)),
+            "superseded_by": _visible(_chain(doc_id, superseded_by)),
+            "related": _visible(sorted(rel)),
         }
 
     def _relation_maps(self) -> tuple[dict, dict]:
@@ -539,6 +659,7 @@ class KnowledgeService:
         title: str | None = None,
         project: str | None = None,
         now: str | None = None,
+        principal: Principal | None = None,
     ) -> SaveResult:
         """소스를 정규화해 save 경유 저장. source 키로 기존 문서를 찾아 **갱신(멱등)**, 없으면 신규.
 
@@ -548,6 +669,7 @@ class KnowledgeService:
         # source 조회 + 신규 id 채번 + save 를 전역 락으로 감싼다. 동시 신규 ingest 가
         # 같은 id 를 채번해 서로 덮어쓰는 것을 막는다(문서별 락은 동일 id 만 직렬화, C8).
         scoped = self._resolve_project("", project)  # 빈 md → 인자 or 기본 프로젝트
+        self._assert_can_write(scoped, principal)  # 프로젝트 editor 권한(락 밖에서 조기 거부)
         with self.store.ingest_lock():
             # 승인 대기 제출도 source 조회·id 채번에 참여시킨다. 그렇지 않으면 승인 전 두 소스가
             # 같은 id 를 받아 나중 승인이 먼저 것을 덮어쓴다(멱등 붕괴, C8 확장).
@@ -576,7 +698,8 @@ class KnowledgeService:
                 doc_id, doc_type, title or source_ref, created, source_ref, content
             )
             return self.save_document(
-                md, actor=actor, change_type="ingest", project=scoped, now=now
+                md, actor=actor, change_type="ingest", project=scoped, now=now,
+                principal=principal,
             )
 
     def _next_id(self, prefix: str, *, extra_ids=None) -> str:
@@ -602,12 +725,13 @@ class KnowledgeService:
         return None
 
     # ── curate (P12) — 옵션, LLM 미구성 시 graceful skip (기획안1 §8) ──
-    def curate(self, query: str, candidate_ids: list[str], *, llm=None) -> dict:
-        """후보 섹션을 LLM 으로 압축. LLM 미구성 시 skip(요약 없이 후보 그대로)."""
+    def curate(self, query: str, candidate_ids: list[str], *, llm=None,
+               principal: Principal | None = None) -> dict:
+        """후보 섹션을 LLM 으로 압축. LLM 미구성 시 skip(요약 없이 후보 그대로). ACL: 접근 가능 문서만."""
         client = llm if llm is not None else self._llm_client()
         cands: list[dict] = []
         for cid in candidate_ids:
-            doc = self.get_document(cid)
+            doc = self.get_document(cid, principal=principal)
             if doc:
                 cands.append({"id": cid, "title": doc["title"], "body": doc["body"]})
 
@@ -632,9 +756,10 @@ class KnowledgeService:
         llm=None,
         related_k: int = 3,
         project: str | None = None,
+        principal: Principal | None = None,
     ) -> dict:
         """소스 → LLM 초안(마크다운). **저장하지 않는다.** lint 를 미리 돌려 함께 반환.
-        project 지정 시 관련 ADR 수집을 그 프로젝트로 스코프.
+        project 지정 시 관련 ADR 수집을 그 프로젝트로 스코프. principal 로 소스·관련문서 ACL 적용.
 
         반환: {draft_markdown, lint:{ok,reasons}, used_sources[], related_context[]}.
         LLM 미구성 시 LLMUnavailable (엔드포인트가 503 으로 매핑, 직접 작성은 항상 가능).
@@ -648,7 +773,7 @@ class KnowledgeService:
         source_texts: list[str] = []
         for s in sources or []:
             if s.get("kind") == "doc":
-                doc = self.get_document(s.get("id"))
+                doc = self.get_document(s.get("id"), principal=principal)
                 if doc:
                     source_texts.append(f"# {doc['title']}\n{doc['body']}")
                     used.append(doc["id"])
@@ -667,6 +792,7 @@ class KnowledgeService:
             rel_filters = {"type": "adr", "status": "accepted"}
             if project is not None:
                 rel_filters["project"] = project
+            rel_filters = self._scope_readable(rel_filters, principal)  # ACL(필터-선행)
             hits = self.store.search(rel_tokens, rel_filters, k=related_k * 3, mode="or")
             for h in hits:
                 if h.doc_id not in used and h.doc_id not in related_ids:
@@ -675,7 +801,7 @@ class KnowledgeService:
                     break
         related_ctx = []
         for rid in related_ids:
-            d = self.get_document(rid)
+            d = self.get_document(rid, principal=principal)
             if d:
                 related_ctx.append(f"## {d['id']} {d['title']}\n{d['body'][:400]}")
 
@@ -703,15 +829,16 @@ class KnowledgeService:
         target_type: str = "adr",
         project: str | None = None,
         llm=None,
+        principal: Principal | None = None,
     ) -> dict:
         """대화 1턴 → {session_id, reply, staged}. LLM 미구성 시 LLMUnavailable(503 매핑).
-        project 는 세션에 저장돼 읽기 도구·제안이 그 프로젝트로 스코프된다."""
+        project 는 세션에 저장돼 읽기 도구·제안이 그 프로젝트로 스코프된다. principal 로 ACL 적용."""
         client = llm if llm is not None else self._llm_client()
         if not client.available:
             raise LLMUnavailable("LLM 미구성 — 멀티턴 채팅 비활성")
         return self._orchestrator().turn(
             session_id, user_message, actor=actor, target_type=target_type,
-            project=project, llm=client,
+            project=project, llm=client, principal=principal,
         )
 
     def chat_turn_stream(
@@ -723,6 +850,7 @@ class KnowledgeService:
         target_type: str = "adr",
         project: str | None = None,
         llm=None,
+        principal: Principal | None = None,
     ):
         """대화 1턴을 스트리밍(제너레이터). 도구 해결(stream=False) 후 최종 답변을 stream=True 로.
 
@@ -733,7 +861,7 @@ class KnowledgeService:
             raise LLMUnavailable("LLM 미구성 — 멀티턴 채팅 비활성")
         return self._orchestrator().turn_stream(
             session_id, user_message, actor=actor, target_type=target_type,
-            project=project, llm=client,
+            project=project, llm=client, principal=principal,
         )
 
     @property
@@ -745,9 +873,11 @@ class KnowledgeService:
         """세션 상태(messages/staged 등). 없으면 None."""
         return self._orchestrator().get(session_id)
 
-    def apply_session(self, session_id: str, *, actor: str) -> list[dict]:
-        """세션의 staged 변경을 승인 큐에 제출(submit_change). 반환: 제출 목록."""
-        return self._orchestrator().apply(session_id, actor=actor)
+    def apply_session(
+        self, session_id: str, *, actor: str, principal: Principal | None = None
+    ) -> list[dict]:
+        """세션의 staged 변경을 승인 큐에 제출(submit_change). 반환: 제출 목록. principal 로 쓰기 ACL."""
+        return self._orchestrator().apply(session_id, actor=actor, principal=principal)
 
     def read_template(self, target_type: str) -> str:
         """타입별 스캐폴드 템플릿 원문(멀티턴 도구 get_template 위임). 없으면 빈 문자열."""

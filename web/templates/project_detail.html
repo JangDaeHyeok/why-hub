@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ project.slug }} · 프로젝트 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content" style="max-width: 44rem">
+    <p><a class="btn" href="/ui/projects">← 프로젝트 목록</a></p>
+    <h1>프로젝트 · {{ project.slug }}</h1>
+    {% if message %}<div class="banner banner-success">{{ message }}</div>{% endif %}
+    {% if error %}<div class="banner banner-danger">{{ error }}</div>{% endif %}
+
+    <div class="card" style="margin-bottom: var(--space-4)">
+      <h2>정보</h2>
+      <form method="post" action="/ui/projects/{{ project.slug }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <p><label>이름</label><br>
+          <input class="field" type="text" name="name" value="{{ project.name }}" style="width: 20rem"></p>
+        <p><label>설명</label><br>
+          <input class="field" type="text" name="description" value="{{ project.description or '' }}" style="width: 30rem"></p>
+        <button class="btn btn-primary" type="submit">저장</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>멤버 (접근 권한)</h2>
+      <p class="muted"><strong>viewer</strong>=읽기, <strong>editor</strong>=읽기+제출. admin 은 별도 부여 없이 모든 프로젝트 접근.</p>
+
+      <form method="post" action="/ui/projects/{{ project.slug }}/members" style="margin-bottom: var(--space-3)">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select class="field" name="user_id" style="width: 14rem">
+          {% for u in users %}<option value="{{ u.id }}">{{ u.username }}{% if u.is_admin %} (admin){% endif %}</option>{% endfor %}
+        </select>
+        <select class="field" name="role">
+          <option value="viewer">viewer</option>
+          <option value="editor">editor</option>
+        </select>
+        <button class="btn btn-primary" type="submit">추가/갱신</button>
+      </form>
+
+      {% if not members %}<p class="muted">멤버가 없습니다(기본 프로젝트가 아니라면 아무도 접근할 수 없습니다).</p>{% endif %}
+      {% for m in members %}
+      <div style="display:flex; gap:var(--space-2); align-items:center; margin-bottom:6px">
+        <strong>{{ m.username }}</strong> <span class="badge">{{ m.role }}</span>
+        <form method="post" action="/ui/projects/{{ project.slug }}/members/{{ m.user_id }}/remove" style="margin:0">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn" type="submit">제거</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if not is_default %}
+    <div class="card" style="margin-top: var(--space-4)">
+      <h2>프로젝트 삭제</h2>
+      <p class="muted">프로젝트 등록과 모든 멤버(접근 권한)를 삭제합니다. 이 프로젝트의
+        <strong>문서 {{ doc_count }}건</strong>은 삭제되지 않으며, 이후 <strong>관리자만</strong> 접근할 수 있습니다.
+        이 작업은 되돌릴 수 없습니다.</p>
+      <form method="post" action="/ui/projects/{{ project.slug }}/delete"
+            onsubmit="return confirm('프로젝트 {{ project.slug }} 를 삭제할까요? 멤버 접근 권한이 모두 회수됩니다.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-danger" type="submit">프로젝트 삭제</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="muted" style="margin-top: var(--space-4)">기본 프로젝트는 삭제할 수 없습니다.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

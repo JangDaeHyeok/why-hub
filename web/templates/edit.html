@@ -20,8 +20,8 @@
     {% endif %}
 
     <form method="post" action="{{ action }}">
-      <p><label>작성자 (actor)</label><br>
-        <input class="field" type="text" name="actor" value="{{ actor or 'anonymous' }}"></p>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <p class="muted">작성자: <strong>{{ principal.username }}</strong> (로그인 세션 기준 · 입력 불가)</p>
 
       <p><label>마크다운 (frontmatter 포함)</label><br>
         <textarea class="field mono" name="markdown" rows="24" spellcheck="false">{{ markdown }}</textarea></p>

@@ -8,6 +8,7 @@ import pytest
 
 from hub.chat import ChatOrchestrator
 from hub.config import ApprovalConfig, Config
+from hub.tests.authhelpers import admin
 from hub.service import KnowledgeService
 from hub.store import anchors as anchors_mod
 from hub.store import journal, paths, reconcile, snapshots
@@ -256,7 +257,7 @@ def test_r2_fts_or_mode_reserved_tokens_no_error(svc):
 # ── R3: 같은 기준 버전에서 갈라진 두 제출 — 나중 승인은 충돌로 거부 ──────
 def _approval_svc(tmp_path):
     c = Config()
-    c.approval = ApprovalConfig(enabled=True, admins=["alice"])
+    c.approval = ApprovalConfig(enabled=True)
     return KnowledgeService(tmp_path, c)
 
 
@@ -264,7 +265,7 @@ def test_r3_stale_approval_rejected_no_lost_update(tmp_path):
     svc = _approval_svc(tmp_path)
     # 문서 생성 → 승인(기준 버전 확정).
     sid0 = svc.save_document(_adr(), actor="carol")["submission_id"]
-    svc.approve_submission(sid0, approver="alice", now="2026-07-14T10:00:00")
+    svc.approve_submission(sid0, principal=admin("alice"), now="2026-07-14T10:00:00")
 
     # 같은 기준에서 두 편집을 제출(둘 다 현재 body_hash 를 base 로 캡처).
     editA = _adr(decision="A: 세션+Redis 유지, TTL 조정.")
@@ -273,12 +274,12 @@ def test_r3_stale_approval_rejected_no_lost_update(tmp_path):
     sidB = svc.save_document(editB, actor="dave")["submission_id"]
 
     # A 승인 → 반영(문서 버전 이동).
-    svc.approve_submission(sidA, approver="alice", now="2026-07-14T11:00:00")
+    svc.approve_submission(sidA, principal=admin("alice"), now="2026-07-14T11:00:00")
     assert "TTL 조정" in svc.get_raw("adr-0001")
 
     # B 승인 → 기준 버전 불일치 → 충돌 거부(먼저 승인된 A 의 변경이 조용히 사라지지 않는다).
     with pytest.raises(ValueError) as ei:
-        svc.approve_submission(sidB, approver="alice", now="2026-07-14T12:00:00")
+        svc.approve_submission(sidB, principal=admin("alice"), now="2026-07-14T12:00:00")
     assert "충돌" in str(ei.value)
     # A 의 내용은 그대로, B 제출은 pending 유지(재작성 가능).
     assert "TTL 조정" in svc.get_raw("adr-0001")
@@ -291,7 +292,7 @@ def test_r3_idempotent_recovery_reapprove_after_crash(tmp_path):
     # UI 에서 재승인하면 충돌이 아니라 멱등 복구(상태만 approved)로 수렴해야 한다.
     svc = _approval_svc(tmp_path)
     sid0 = svc.save_document(_adr(), actor="carol")["submission_id"]
-    svc.approve_submission(sid0, approver="alice", now="2026-07-14T10:00:00")
+    svc.approve_submission(sid0, principal=admin("alice"), now="2026-07-14T10:00:00")
 
     edit = _adr(decision="세션 유지, TTL 만 조정.")
     sid = svc.save_document(edit, actor="carol")["submission_id"]
@@ -301,7 +302,7 @@ def test_r3_idempotent_recovery_reapprove_after_crash(tmp_path):
     assert "TTL 만 조정" in svc.get_raw("adr-0001")
 
     # 재승인 → 충돌 아님(내용 이미 동일). 상태만 approved 로 마무리(멱등).
-    res = svc.approve_submission(sid, approver="alice", now="2026-07-14T12:00:00")
+    res = svc.approve_submission(sid, principal=admin("alice"), now="2026-07-14T12:00:00")
     assert res.change_type == "noop"
     assert svc.get_submission(sid)["status"] == "approved"
     assert "TTL 만 조정" in svc.get_raw("adr-0001")
@@ -312,7 +313,7 @@ def test_r3_normal_approval_still_works(tmp_path):
     # 충돌이 없으면 승인은 종전대로 반영된다(거짓 양성 없음).
     svc = _approval_svc(tmp_path)
     sid = svc.save_document(_adr(), actor="carol")["submission_id"]
-    svc.approve_submission(sid, approver="alice", now="2026-07-14T10:00:00")
+    svc.approve_submission(sid, principal=admin("alice"), now="2026-07-14T10:00:00")
     assert svc.get_document("adr-0001") is not None
     svc.close()
 

@@ -73,15 +73,54 @@ def _sha(body: str) -> str:
 
 
 class PostgresStore(Store):
-    def __init__(self, config: Config):
-        import psycopg  # 지연 import (선택 의존)
-
+    def __init__(self, config: Config, *, conn=None):
         self.config = config
         self.default_project = config.default_project
+        # 스키마 DDL 은 **소유 롤(hub_admin)만** 실행한다. 검증 전용 롤(hub_mcp)은 manage_schema=False
+        # 로 주입돼, 테이블을 만들거나 ALTER 하지 않고 준비 완료만 기다린다 — 둘 다 CREATE/ALTER 를
+        # 돌리면 기동 순서에 따라 mcp 가 소유자가 돼 admin 의 ALTER 가 not-owner 로 실패한다(§8).
+        self.manage_schema = config.postgres.manage_schema
         self._lock = threading.RLock()  # 공유 커넥션 직렬화(프로세스 내) — 재진입 허용
-        self.conn = psycopg.connect(config.postgres.resolve_dsn(), autocommit=True)
+        if conn is not None:
+            self.conn = conn
+        else:
+            import psycopg  # 지연 import (선택 의존)
+
+            self.conn = psycopg.connect(config.postgres.resolve_dsn(), autocommit=True)
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        """소유 롤이면 스키마를 생성·마이그레이션(DDL), 아니면 준비될 때까지 대기·확인만 한다."""
         with self._lock, self.conn.cursor() as cur:
-            cur.execute(_SCHEMA)
+            if self.manage_schema:
+                cur.execute(_SCHEMA)
+            else:
+                self._await_schema(cur)
+
+    @staticmethod
+    def _await_schema(cur, *, attempts: int = 60, delay: float = 1.0) -> None:
+        """소유 롤(admin)이 스키마를 만들 때까지 대기(빈 PGDATA 최초 기동 시 기동 순서 무의존).
+
+        DDL 을 실행하지 않는다. admin 은 _SCHEMA 를 autocommit 로 실행해 문장마다 개별 커밋되므로
+        `documents` 만 확인하면 마지막 마이그레이션(submissions.base_hash) 전에 통과할 수 있다 —
+        **_SCHEMA 의 마지막 산출물인 submissions.base_hash 컬럼**을 폴링해 전체 준비를 보장한다.
+        시간 초과 시 RuntimeError."""
+        import time
+
+        query = (
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='submissions' AND column_name='base_hash'"
+        )
+        for i in range(attempts):
+            cur.execute(query)
+            if cur.fetchone():
+                return
+            if i + 1 < attempts:
+                time.sleep(delay)
+        raise RuntimeError(
+            "스키마 미준비 — submissions.base_hash 컬럼이 없습니다"
+            "(소유 롤 admin 초기화 대기 시간 초과)."
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -264,6 +303,11 @@ class PostgresStore(Store):
             if filters.get(key) is not None:
                 clauses.append(f"{p}{key}=%s")
                 params.append(filters[key])
+        # 프로젝트 ACL 필터(집합 소속, 필터-선행 §2-6). 빈 리스트 → 0건(deny-by-default).
+        allowed = filters.get("project__in")
+        if allowed is not None:
+            clauses.append(f"{p}project = ANY(%s)")
+            params.append(list(allowed))
         tags = filters.get("tags")
         if tags:
             tags = [tags] if isinstance(tags, str) else tags

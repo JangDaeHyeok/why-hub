@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}회원가입 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content" style="max-width: 28rem">
+    <h1>회원가입</h1>
+    <p class="muted">가입 즉시 <strong>member</strong> 로 활성화됩니다. 관리자 권한은 별도로 부여됩니다.</p>
+    {% if error %}<div class="banner banner-danger">{{ error }}</div>{% endif %}
+    <form method="post" action="/ui/signup">
+      <p><label>사용자명 <span class="muted">(3~32자, 영소문자로 시작)</span></label><br>
+        <input class="field" type="text" name="username" autocomplete="username" autofocus></p>
+      <p><label>비밀번호 <span class="muted">(최소 10자)</span></label><br>
+        <input class="field" type="password" name="password" autocomplete="new-password"></p>
+      <div style="margin-top: var(--space-3)">
+        <button class="btn btn-primary" type="submit">가입</button>
+        <a class="btn" href="/ui/login">로그인</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

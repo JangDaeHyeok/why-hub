@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}지식 허브{% endblock %}</title>
+  <meta name="csrf-token" content="{{ csrf_token }}">
   {% include "_theme-init.html" %}
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/base.css">
@@ -15,23 +16,43 @@
     <header class="topbar">
       <a class="brand" href="/">지식 허브</a>
       <span class="muted">Why 중심 · 유사 RAG</span>
+      {% if principal %}
       {% set cur = request.cookies.get('__project') %}
       <form method="post" action="/ui/project" style="display:inline-flex; gap:4px; align-items:center; margin-left: var(--space-3)">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <span class="muted" title="현재 프로젝트">📁</span>
         <input class="field" name="project" list="__proj-list" style="width:9rem; padding:2px 6px"
                value="{{ '' if cur == '__all__' else (cur or default_project) }}"
                placeholder="프로젝트" title="프로젝트 전환(자유 입력 가능)">
         <datalist id="__proj-list">
-          {% for p in all_projects() %}<option value="{{ p }}">{% endfor %}
+          {% for p in all_projects %}<option value="{{ p }}">{% endfor %}
         </datalist>
         <button class="btn" type="submit" title="전환">전환</button>
         <button class="btn" type="submit" name="project" value="__all__" title="전체 프로젝트">전체</button>
       </form>
+      {% endif %}
       <span class="spacer"></span>
+      {% if principal %}
       <a class="btn" href="/ui/chat">💬 AI 채팅</a>
       <a class="btn" href="/ui/generate">✨ AI 생성</a>
-      <a class="btn" href="/ui/approvals">📥 승인함</a>
+      {% if principal.is_admin %}<a class="btn" href="/ui/approvals">📥 승인함</a>{% endif %}
+      {% if principal.is_admin %}<a class="btn" href="/ui/projects">🗂 프로젝트</a>{% endif %}
       <a class="btn" href="/ui/new">+ 새 문서</a>
+      <span class="muted" title="로그인 사용자">
+        👤 {{ principal.username }}
+        <span class="badge">{{ '관리자' if principal.is_admin else 'member' }}</span>
+      </span>
+      <a class="btn" href="/ui/account">내 계정</a>
+      {% if auth_enabled %}
+      <form method="post" action="/ui/logout" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn" type="submit">로그아웃</button>
+      </form>
+      {% endif %}
+      {% else %}
+      <a class="btn" href="/ui/login">로그인</a>
+      {% if signup_enabled %}<a class="btn btn-primary" href="/ui/signup">회원가입</a>{% endif %}
+      {% endif %}
       <button class="theme-toggle" onclick="__toggleTheme()" title="테마 전환" aria-label="테마 전환">◐</button>
     </header>
     {% block body %}{% endblock %}

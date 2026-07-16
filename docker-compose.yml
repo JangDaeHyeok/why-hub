@@ -1,9 +1,23 @@
-# 지식 허브 배포 — postgres + 관리 서버(web/UI) + MCP 서버(streamable-http).
-# 모든 상태는 PostgreSQL 에(storage.backend=postgres). 문서·이력·스냅샷·제출·FTS 중앙관리.
+# 지식 허브 배포 — postgres + 관리 서버(web/UI, 인증·JWT 발급) + MCP 서버(streamable-http, JWT 검증).
+# 모든 상태는 PostgreSQL 에. 인증: admin=private key 보유·PAT→JWT 발급, mcp=public key 로 검증만.
 #
+#   cp .env.example .env   # 값 채우기 (비번·pepper·session secret)
+#   # RSA 키 생성 (admin 만 private, mcp 는 public):
+#   mkdir -p secrets
+#   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out secrets/jwt_private.pem
+#   openssl rsa -pubout -in secrets/jwt_private.pem -out secrets/jwt_public.pem
 #   docker compose up --build
 #   # 최초 1회 기존 knowledge/ 이관:
 #   docker compose run --rm admin python scripts/import_to_postgres.py
+#
+#   # ⚠️ 기존 pgdata 볼륨을 유지한 채 업그레이드하는 경우(롤 분리가 처음 도입되는 배포):
+#   #   db/init 은 빈 PGDATA 에서만 실행되므로 hub_admin·hub_mcp 롤이 없어 양쪽 기동이 실패한다.
+#   #   up 전에 슈퍼유저로 1회 롤 보정(idempotent)을 실행한다:
+#   docker compose run --rm \
+#     -e KNOWLEDGE_HUB_SUPERUSER_DSN=postgresql://hub:$PGPASSWORD@postgres:5432/knowledge_hub \
+#     admin python scripts/migrate_roles.py
+#   # 관리자 지정: docker compose exec postgres psql -U hub -d knowledge_hub \
+#   #   -c "UPDATE auth.users SET is_admin=true WHERE username='<사용자명>';"
 
 services:
   postgres:
@@ -12,56 +26,80 @@ services:
       POSTGRES_USER: hub
       POSTGRES_PASSWORD: ${PGPASSWORD:-hubpw}
       POSTGRES_DB: knowledge_hub
+      # 앱 롤 비밀번호 — 초기화 스크립트(db/init)가 롤 생성 시 사용.
+      HUB_ADMIN_PASSWORD: ${HUB_ADMIN_PASSWORD:-adminpw}
+      HUB_MCP_PASSWORD: ${HUB_MCP_PASSWORD:-mcppw}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro   # 롤 분리 초기화(최초 1회)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hub -d knowledge_hub"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  admin:  # 관리 서버 — HTTP API + 웹 UI(읽기·쓰기·승인)
+  admin:  # 관리 서버 — HTTP API + 웹 UI(읽기·쓰기·승인) + 인증·PAT→JWT 발급
     build: .
     command: python -m hub.interfaces.web
     environment:
       HOST: 0.0.0.0
       PORT: "8000"
-      PGPASSWORD: ${PGPASSWORD:-hubpw}
-      # LLM 엔드포인트 URL 은 시크릿성 — .env(또는 셸 env)에서 주입, git 에 커밋 안 함.
+      # DB: admin 롤(auth + knowledge 접근).
+      KNOWLEDGE_HUB_PG_DSN: postgresql://hub_admin:${HUB_ADMIN_PASSWORD:-adminpw}@postgres:5432/knowledge_hub
       KNOWLEDGE_HUB_LLM_COMPLETE_URL: ${KNOWLEDGE_HUB_LLM_COMPLETE_URL:-}
       KNOWLEDGE_HUB_LLM_STREAM_URL: ${KNOWLEDGE_HUB_LLM_STREAM_URL:-}
       KNOWLEDGE_HUB_CONFIG: /app/config.deploy.toml
-      KNOWLEDGE_HUB_ROOT: /app/knowledge   # import 스크립트의 파일 소스(이관 원천)
+      KNOWLEDGE_HUB_ROOT: /app/knowledge
+      # ── 인증 (배포 기본: on) ──────────────────────────────────────────
+      AUTH_ENABLED: "true"
+      AUTH_ISSUER: ${AUTH_ISSUER:-why-hub}
+      AUTH_MCP_AUDIENCE: ${AUTH_MCP_AUDIENCE:-why-hub-mcp}
+      AUTH_COOKIE_SECURE: "true"
+      AUTH_SIGNUP_ENABLED: "true"
+      AUTH_PRIVATE_KEY_FILE: /run/secrets/jwt_private.pem   # admin 만 private key 보유
+      AUTH_PUBLIC_KEY_FILE: /run/secrets/jwt_public.pem
+      AUTH_PAT_PEPPER: ${AUTH_PAT_PEPPER:?set AUTH_PAT_PEPPER in .env}
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:?set AUTH_SESSION_SECRET in .env}
     volumes:
       - ./config.deploy.toml:/app/config.deploy.toml:ro
-      # 기존 파일 저장소 → import_to_postgres 소스. FileStore 가 SQLite 인덱스를 WAL 로 여므로
-      # (-wal/-shm 생성·PRAGMA 쓰기) 읽기 전용이면 열기 자체가 실패한다 → rw 로 마운트.
       - ./knowledge:/app/knowledge
+      - ./secrets/jwt_private.pem:/run/secrets/jwt_private.pem:ro
+      - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
     ports:
       - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
 
-  mcp:  # MCP 서버 — streamable-http (원격 에이전트 접근)
+  mcp:  # MCP 서버 — streamable-http. JWT 검증만(public key). private key·pepper 미보유.
     build: .
     command: python -m hub.interfaces.mcp_server
     environment:
-      KNOWLEDGE_HUB_MCP_TRANSPORT: streamable-http
+      KNOWLEDGE_HUB_MCP_TRANSPORT: streamable-http   # 인증 활성 + stdio 는 기동 실패
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8001"
-      PGPASSWORD: ${PGPASSWORD:-hubpw}
-      # LLM 엔드포인트 URL 은 시크릿성 — .env(또는 셸 env)에서 주입, git 에 커밋 안 함.
+      # DB: mcp 롤(knowledge 테이블만 — auth 스키마 접근 불가).
+      KNOWLEDGE_HUB_PG_DSN: postgresql://hub_mcp:${HUB_MCP_PASSWORD:-mcppw}@postgres:5432/knowledge_hub
+      # 스키마 DDL 은 소유 롤(admin)만 — mcp 는 준비 대기·확인만(소유권 충돌·기동 순서 크래시 방지).
+      KNOWLEDGE_HUB_PG_MANAGE_SCHEMA: "false"
       KNOWLEDGE_HUB_LLM_COMPLETE_URL: ${KNOWLEDGE_HUB_LLM_COMPLETE_URL:-}
       KNOWLEDGE_HUB_LLM_STREAM_URL: ${KNOWLEDGE_HUB_LLM_STREAM_URL:-}
       KNOWLEDGE_HUB_CONFIG: /app/config.deploy.toml
+      # ── 인증 (검증 전용) ──────────────────────────────────────────────
+      AUTH_ENABLED: "true"
+      AUTH_ISSUER: ${AUTH_ISSUER:-why-hub}
+      AUTH_MCP_AUDIENCE: ${AUTH_MCP_AUDIENCE:-why-hub-mcp}
+      AUTH_PUBLIC_KEY_FILE: /run/secrets/jwt_public.pem   # public key 만 (private·pepper 없음)
     volumes:
       - ./config.deploy.toml:/app/config.deploy.toml:ro
+      - ./secrets/jwt_public.pem:/run/secrets/jwt_public.pem:ro
     ports:
       - "8001:8001"
     depends_on:
       postgres:
         condition: service_healthy
+      admin:            # 스키마 소유·생성은 admin — mcp 는 그 뒤에 기동(스키마 준비 대기 최소화)
+        condition: service_started
 
 volumes:
   pgdata:

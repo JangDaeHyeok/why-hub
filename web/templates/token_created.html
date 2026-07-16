@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}토큰 생성됨 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content" style="max-width: 40rem">
+    <h1>토큰이 생성되었습니다</h1>
+    <div class="banner banner-warning">
+      <strong>지금 복사하세요 — 이 원문은 다시 표시되지 않습니다.</strong>
+    </div>
+    <p><label>{{ pat.name }} ({{ pat.scopes | join(', ') }})</label></p>
+    <pre class="field mono" style="white-space: pre-wrap; user-select: all">{{ full_token }}</pre>
+    <p class="muted">JWT 로 교환:
+      <code>curl -H "Authorization: Bearer {{ full_token }}" -X POST &lt;host&gt;/api/auth/token/exchange</code></p>
+    <div style="margin-top: var(--space-3)">
+      <a class="btn btn-primary" href="/ui/account/tokens">토큰 목록으로</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

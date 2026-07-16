@@ -22,6 +22,10 @@ effort = "high"   # low | high (엔드포인트 default high)
 max_tokens = 4096
 
 # 관리자 승인 워크플로우. enabled=true 면 모든 쓰기가 승인 대기 큐를 거친다.
+# 승인 권한은 users.is_admin(DB)로 지정한다 — config 문자열 admins 는 제거됨(인증/RBAC).
 [approval]
 enabled = true
-admins = ["dhjang2"]
+
+# 인증/인가. 로컬 도그푸딩은 off(무마찰). 켜려면 AUTH_ENABLED=true + 키/시크릿 주입(README 참고).
+[auth]
+enabled = false

@@ -20,8 +20,7 @@
       <div id="staged"></div>
       <form id="chatForm" autocomplete="off">
         <input type="hidden" id="sessionId" value="">
-        <p><label>작성자 (actor)</label><br>
-          <input class="field" type="text" id="actor" name="actor" value="anonymous"></p>
+        <p class="muted">작성자: <strong>{{ principal.username }}</strong> (로그인 세션 기준)</p>
         <p><label>목표 타입</label><br>
           <select class="field" id="targetType" name="target_type">
             {% for t in ['adr', 'design-intent', 'guide'] %}

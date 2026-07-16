@@ -12,6 +12,7 @@ import tempfile
 import pytest
 
 from hub.config import ApprovalConfig, Config
+from hub.tests.authhelpers import admin
 from hub.service import KnowledgeService
 from hub.store.index_fts import open_index
 from hub.store.lint import lint
@@ -29,11 +30,11 @@ def _adr(id="adr-0001", *, project=None, title="결정", status="accepted", alt=
     )
 
 
-def _cfg(default_project="why-hub", *, approval=False, admins=("alice",)):
+def _cfg(default_project="why-hub", *, approval=False):
     c = Config()
     c.default_project = default_project
     if approval:
-        c.approval = ApprovalConfig(enabled=True, admins=list(admins))
+        c.approval = ApprovalConfig(enabled=True)
     return c
 
 
@@ -125,7 +126,7 @@ def test_submission_carries_project_and_reflects(tmp_path):
     # project 필터로 승인함 조회.
     assert [x["id"] for x in s.list_submissions("pending", project="alpha")] == [sub["submission_id"]]
     assert s.list_submissions("pending", project="beta") == []
-    s.approve_submission(sub["submission_id"], approver="alice")
+    s.approve_submission(sub["submission_id"], principal=admin("alice"))
     assert s.get_document("adr-0002")["project"] == "alpha"
     assert [d["id"] for d in s.list_documents(project="alpha")] == ["adr-0002"]
     s.close()

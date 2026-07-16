@@ -51,7 +51,7 @@ def svc(tmp_path):
 
 def test_mcp_save_creates_and_searchable(svc):
     mcp = build_mcp(svc)
-    res = _mcp_call(mcp, "save_document", {"markdown": _adr(), "actor": "agent"})
+    res = _mcp_call(mcp, "save_document", {"markdown": _adr()})
     assert res["id"] == "adr-0001" and res["change_type"] == "created"
 
     hits = _mcp_call(mcp, "search_knowledge", {"query": "세션"})
@@ -63,14 +63,14 @@ def test_mcp_save_creates_and_searchable(svc):
 def test_mcp_save_lint_failure_raises(svc):
     mcp = build_mcp(svc)
     with pytest.raises(ToolError) as ei:
-        _mcp_call(mcp, "save_document", {"markdown": _adr(alt=""), "actor": "agent"})
+        _mcp_call(mcp, "save_document", {"markdown": _adr(alt="")})
     assert "대안" in str(ei.value)
 
 
 def test_mcp_save_with_intended_diff(svc):
     mcp = build_mcp(svc)
     _mcp_call(mcp, "save_document", {
-        "markdown": _adr(), "actor": "agent",
+        "markdown": _adr(),
         "intended_diff": "의도: 세션 기반 전환.",
     })
     diffs = _mcp_call(mcp, "get_docs_diff", {"id": "adr-0001"})

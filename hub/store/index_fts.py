@@ -37,6 +37,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 _EQ_FILTERS = ("type", "status", "project", "tenant", "source")
 
 
+def _project_in_clause(filters: dict, clauses: list, params: list) -> None:
+    """프로젝트 ACL 집합 필터(필터-선행 §2-6). 빈 리스트 → 0건(deny-by-default)."""
+    allowed = filters.get("project__in")
+    if allowed is None:
+        return
+    allowed = list(allowed)
+    if not allowed:
+        clauses.append("1=0")
+        return
+    placeholders = ",".join("?" for _ in allowed)
+    clauses.append(f"project IN ({placeholders})")
+    params.extend(allowed)
+
+
 def _sha(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
@@ -146,6 +160,7 @@ class Index:
             if filters.get(key) is not None:
                 clauses.append(f"{key}=?")
                 params.append(filters[key])
+        _project_in_clause(filters, clauses, params)
         # tags: 요청한 모든 태그를 포함(AND). JSON 배열에 대해 따옴표 포함 LIKE.
         tags = filters.get("tags")
         if tags:
@@ -201,6 +216,7 @@ class Index:
             if filters.get(key) is not None:
                 clauses.append(f"{key}=?")
                 params.append(filters[key])
+        _project_in_clause(filters, clauses, params)
         tags = filters.get("tags")
         if tags:
             if isinstance(tags, str):

@@ -79,3 +79,8 @@ docs/prompts/
 
 # Claude Code personal/local settings (not shared)
 .claude/settings.local.json
+
+# 인증 시크릿 (RSA 키·pepper) — 절대 커밋하지 않는다 (구현스펙-인증인가-RBAC.md §8).
+/secrets/
+*.pem
+auth.sqlite

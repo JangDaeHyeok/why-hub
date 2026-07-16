@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}PAT 관리 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content" style="max-width: 40rem">
+    <h1>개인 액세스 토큰(PAT)</h1>
+    <p class="muted">PAT 을 <strong>단기 JWT 로 교환</strong>해 MCP 요청에 사용합니다. 원문은 생성 직후 한 번만 표시됩니다.
+      폐기해도 이미 발급된 JWT 는 만료(최대 10분)까지 유효할 수 있습니다.</p>
+    {% if error %}<div class="banner banner-danger">{{ error }}</div>{% endif %}
+
+    <div class="card" style="margin-bottom: var(--space-4)">
+      <h2>새 토큰 발급</h2>
+      <form method="post" action="/ui/account/tokens">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <p><label>이름</label><br>
+          <input class="field" type="text" name="name" placeholder="예: ci-agent" style="width: 16rem"></p>
+        <p><label>scope <span class="muted">(보유 권한 내에서만)</span></label><br>
+          <label><input type="checkbox" name="scope_read" value="1" checked> knowledge:read</label>
+          <label style="margin-left: var(--space-3)"><input type="checkbox" name="scope_submit" value="1" checked> knowledge:submit</label></p>
+        <button class="btn btn-primary" type="submit">발급</button>
+      </form>
+    </div>
+
+    <h2>내 토큰</h2>
+    {% if not pats %}<p class="muted">발급된 토큰이 없습니다.</p>{% endif %}
+    {% for p in pats %}
+    <div class="card" style="margin-bottom: var(--space-2)">
+      <div>
+        <strong>{{ p.name }}</strong>
+        <span class="muted">· {{ p.prefix }} · scope: {{ p.scopes | join(', ') }}</span>
+        {% if p.revoked_at %}<span class="badge">폐기됨</span>{% endif %}
+      </div>
+      <div class="muted">
+        생성 {{ p.created_at }}
+        {% if p.expires_at %}· 만료 {{ p.expires_at }}{% endif %}
+        {% if p.last_used_at %}· 마지막 사용 {{ p.last_used_at }}{% endif %}
+      </div>
+      {% if not p.revoked_at %}
+      <form method="post" action="/ui/account/tokens/{{ p.id }}/revoke" style="margin-top: var(--space-2)">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn" type="submit">폐기</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

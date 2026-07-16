@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}내 계정 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content" style="max-width: 32rem">
+    <h1>내 계정</h1>
+    {% if message %}<div class="banner banner-success">{{ message }}</div>{% endif %}
+    {% if error %}<div class="banner banner-danger">{{ error }}</div>{% endif %}
+
+    <div class="card" style="margin-bottom: var(--space-3)">
+      <div><strong>{{ principal.username }}</strong>
+        <span class="badge">{{ '관리자' if principal.is_admin else 'member' }}</span></div>
+      <div class="muted">권한(scope): {{ principal.scopes | join(', ') }}</div>
+      <div style="margin-top: var(--space-2)"><a class="btn" href="/ui/account/tokens">🔑 PAT 관리</a></div>
+    </div>
+
+    <h2>비밀번호 변경</h2>
+    <p class="muted">변경 시 현재 세션은 유지되고 <strong>다른 모든 세션은 로그아웃</strong>됩니다. PAT 은 유지됩니다.</p>
+    <form method="post" action="/ui/account/password">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <p><label>현재 비밀번호</label><br>
+        <input class="field" type="password" name="old_password" autocomplete="current-password"></p>
+      <p><label>새 비밀번호 <span class="muted">(최소 10자)</span></label><br>
+        <input class="field" type="password" name="new_password" autocomplete="new-password"></p>
+      <button class="btn btn-primary" type="submit">변경</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

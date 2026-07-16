@@ -10,6 +10,8 @@ design-intent = "^di-[a-z0-9-]+$"
 [storage]
 backend = "postgres"
 [storage.postgres]
+# 접속은 compose 가 KNOWLEDGE_HUB_PG_DSN env 로 주입한다(admin=hub_admin, mcp=hub_mcp 롤 분리).
+# 아래 값은 env 미주입 시 폴백.
 host = "postgres"        # compose 서비스명
 port = 5432
 database = "knowledge_hub"
@@ -23,4 +25,16 @@ max_tokens = 4096
 
 [approval]
 enabled = true
-admins = ["dhjang2"]
+# 관리자는 users.is_admin(DB)로 지정 — config 문자열 목록은 더 이상 쓰지 않는다(인증/RBAC).
+
+# 인증/인가 (구현스펙-인증인가-RBAC.md). 비시크릿 설정만 여기, secret(키·pepper·session)은 env/파일.
+# compose 가 AUTH_* env 로 덮어쓴다(배포 기본: enabled/secure/signup on).
+[auth]
+enabled = true
+issuer = "why-hub"
+mcp_audience = "why-hub-mcp"
+access_token_ttl_seconds = 600      # JWT 기본 TTL 10분
+cookie_secure = true
+signup_enabled = true
+private_key_file = "/run/secrets/jwt_private.pem"   # admin 만
+public_key_file = "/run/secrets/jwt_public.pem"

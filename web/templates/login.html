@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}로그인 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content" style="max-width: 28rem">
+    <h1>로그인</h1>
+    {% if error %}<div class="banner banner-danger">{{ error }}</div>{% endif %}
+    <form method="post" action="/ui/login">
+      <input type="hidden" name="next" value="{{ next }}">
+      <p><label>사용자명</label><br>
+        <input class="field" type="text" name="username" autocomplete="username" autofocus></p>
+      <p><label>비밀번호</label><br>
+        <input class="field" type="password" name="password" autocomplete="current-password"></p>
+      <div style="margin-top: var(--space-3)">
+        <button class="btn btn-primary" type="submit">로그인</button>
+        {% if signup_enabled %}<a class="btn" href="/ui/signup">회원가입</a>{% endif %}
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

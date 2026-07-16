@@ -43,6 +43,12 @@
   border-color: transparent;
 }
 .btn-primary:hover { background: var(--accent-hover); }
+.btn-danger {
+  background: var(--danger-fg);
+  color: var(--fg-on-accent);
+  border-color: transparent;
+}
+.btn-danger:hover { filter: brightness(0.92); }
 
 /* 문서 목록 카드 */
 .card {

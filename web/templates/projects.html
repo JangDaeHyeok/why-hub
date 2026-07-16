@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}프로젝트 관리 · 지식 허브{% endblock %}
+{% block body %}
+<div class="layout">
+  <div class="content" style="max-width: 44rem">
+    <h1>프로젝트 관리 <span class="muted">(admin)</span></h1>
+    <p class="muted">프로젝트를 만들고 멤버(접근 권한)를 관리합니다. member 는 부여받은 프로젝트만 볼 수 있고,
+      <strong>기본 프로젝트</strong>는 모든 로그인 사용자에게 공개됩니다.</p>
+    {% if error %}<div class="banner banner-danger">{{ error }}</div>{% endif %}
+
+    <div class="card" style="margin-bottom: var(--space-4)">
+      <h2>새 프로젝트</h2>
+      <form method="post" action="/ui/projects">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <p><label>slug <span class="muted">(영소문자/숫자/._- · 문서의 project 식별자)</span></label><br>
+          <input class="field" type="text" name="slug" placeholder="예: billing" style="width: 16rem"></p>
+        <p><label>이름</label><br>
+          <input class="field" type="text" name="name" placeholder="표시 이름" style="width: 20rem"></p>
+        <p><label>설명 (선택)</label><br>
+          <input class="field" type="text" name="description" style="width: 30rem"></p>
+        <button class="btn btn-primary" type="submit">생성</button>
+      </form>
+    </div>
+
+    <h2>프로젝트 목록</h2>
+    {% if not projects %}<p class="muted">아직 프로젝트가 없습니다.</p>{% endif %}
+    {% for p in projects %}
+    <div class="card" style="margin-bottom: var(--space-2)">
+      <div>
+        <a href="/ui/projects/{{ p.slug }}"><strong>{{ p.slug }}</strong></a>
+        <span class="muted">· {{ p.name }} · 멤버 {{ p.member_count }}명</span>
+      </div>
+      {% if p.description %}<div class="muted">{{ p.description }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

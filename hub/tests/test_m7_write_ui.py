@@ -41,7 +41,8 @@ def test_new_form_renders(env):
     r = c.get("/ui/new")
     assert r.status_code == 200
     assert 'name="markdown"' in r.text
-    assert 'name="actor"' in r.text
+    # actor 입력란은 제거됨 — 작성자는 인증 세션에서 결정된다(사용자 입력 신뢰 제거).
+    assert 'name="actor"' not in r.text
 
 
 def test_new_form_prefills_template(env):

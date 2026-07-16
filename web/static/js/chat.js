@@ -8,6 +8,9 @@
   var applyUrl = chat.dataset.applyUrl;
   var approvalsUrl = chat.dataset.approvalsUrl;
   var project = chat.dataset.project || null;  // 현재 프로젝트(대화 스코프)
+  // CSRF 토큰 — 쿠키 인증 상태변경 요청(/chat/stream·/chat/apply)에 헤더로 첨부.
+  var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+  var csrfToken = csrfMeta ? csrfMeta.getAttribute("content") : "";
 
   var form = document.getElementById("chatForm");
   var messagesEl = document.getElementById("messages");
@@ -71,11 +74,10 @@
 
   function doApply() {
     var sid = document.getElementById("sessionId").value;
-    var actor = document.getElementById("actor").value || "anonymous";
     fetch(applyUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sid, actor: actor }),
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      body: JSON.stringify({ session_id: sid }),
     })
       .then(function (r) { return r.json(); })
       .then(function (subs) {
@@ -96,7 +98,7 @@
   function stream(body, onEvent) {
     return fetch(streamUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
       body: JSON.stringify(body),
     }).then(function (resp) {
       if (!resp.ok) throw new Error("stream " + resp.status);
@@ -126,7 +128,6 @@
     var msgInput = document.getElementById("message");
     var text = msgInput.value.trim();
     if (!text) return;
-    var actor = document.getElementById("actor").value || "anonymous";
     var targetType = document.getElementById("targetType").value || "adr";
     var sid = document.getElementById("sessionId").value || null;
 
@@ -142,7 +143,7 @@
     var assistantBody = null;
 
     stream(
-      { session_id: sid, message: text, actor: actor, target_type: targetType, project: project },
+      { session_id: sid, message: text, target_type: targetType, project: project },
       function (ev) {
         if (ev.type === "session") {
           document.getElementById("sessionId").value = ev.session_id;

@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 # 확정 스택 (CLAUDE.md §3). 인터페이스/색인/LLM 의존성은 해당 Phase에서 실제 사용.
 # P01(스캐폴딩)은 stdlib 만으로 동작한다.
 dependencies = [
-    "fastmcp",   # MCP 인터페이스 (P07)
+    "fastmcp>=3.4,<4",  # MCP 인터페이스 (P07) — 검증한 auth API(JWTVerifier·require_scopes) 범위로 핀
     "fastapi",       # HTTP 인터페이스 (P08)
     "uvicorn",       # HTTP 서버 구동 (P08)
     "jinja2",        # 읽기 UI 템플릿 (M6)
@@ -18,6 +18,8 @@ dependencies = [
     "python-multipart",  # 쓰기/생성 UI 폼 파싱 (M7·M8)
     "pyyaml",        # frontmatter/이력 YAML (P02~)
     "httpx",         # HTTP 테스트 (P08) + LLM 엔드포인트 클라이언트 (P12)
+    "argon2-cffi",   # 비밀번호 Argon2id 해시 (인증)
+    "pyjwt[crypto]", # RS256 JWT 발급·검증 (인증) — crypto extra = cryptography
 ]
 
 [project.optional-dependencies]

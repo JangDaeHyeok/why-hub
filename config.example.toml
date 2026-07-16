@@ -18,6 +18,9 @@ port = 5432
 database = "knowledge_hub"
 user = "hub"
 password_env = "PGPASSWORD"
+# 스키마 DDL(CREATE/ALTER)을 이 프로세스가 실행할지. 소유 롤(hub_admin)=true, 검증 전용 롤(hub_mcp)은
+# false(DDL 미실행·준비 대기). 배포에선 env KNOWLEDGE_HUB_PG_MANAGE_SCHEMA=false 로 mcp 만 끈다.
+manage_schema = true
 
 # 타입별 id 정규식 (기본: 모든 타입 "^[a-z]+-[0-9]{4}$")
 # 주의: 정규식과 별개로 lint 가 경로 구분자('/', '\', '..')를 항상 거부한다(traversal 차단).
@@ -40,8 +43,36 @@ effort = "high"   # low | high (엔드포인트 default high)
 max_tokens = 4096
 
 # 관리자 승인 워크플로우 (구현스펙-승인워크플로우.md).
-# enabled=true 면 모든 쓰기(수동·AI 적용·ingest)가 승인 대기 큐를 거치고, admins 목록의 actor 만 승인/반려할 수 있다.
-# enabled=false 면 기존처럼 즉시 반영(하위호환·seed).
+# enabled=true 면 모든 쓰기(수동·AI 적용·ingest)가 승인 대기 큐를 거친다.
+# 승인/반려는 knowledge:review scope(=users.is_admin) 보유자만 가능(과거 admins 문자열 목록은 제거).
 [approval]
 enabled = true
-admins = ["alice", "bob"]
+
+# 인증/인가 (구현스펙-인증인가-RBAC.md). 로컬 개발 기본은 비활성(enabled=false) — 무마찰.
+# 배포는 enabled=true + secure cookie + 키/시크릿 주입. secret(private key·pepper·session secret)은
+# 여기 두지 않고 env/파일로만 주입한다(아래는 이름·경로만):
+#   AUTH_PAT_PEPPER, AUTH_SESSION_SECRET (env)  ·  private_key_file/public_key_file (파일)
+# 키 생성:  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt_private.pem
+#           openssl rsa -pubout -in jwt_private.pem -out jwt_public.pem
+[auth]
+enabled = false                 # 로컬 기본 off. 배포는 true(또는 AUTH_ENABLED=true).
+issuer = "why-hub"
+mcp_audience = "why-hub-mcp"
+access_token_ttl_seconds = 600  # JWT 기본 TTL 10분(설정 가능)
+session_ttl_seconds = 1209600   # 웹 세션 14일
+cookie_secure = false           # 배포는 true (HTTPS)
+signup_enabled = true
+# private_key_file = "secrets/jwt_private.pem"   # admin 서버만
+# public_key_file  = "secrets/jwt_public.pem"    # MCP 검증용 (또는 jwks_url)
+# jwks_url = "http://admin:8000/.well-known/jwks.json"
+pat_pepper_env = "AUTH_PAT_PEPPER"
+session_secret_env = "AUTH_SESSION_SECRET"
+# rate limit 임계값(슬라이딩 윈도우). 로그인은 계정 버킷 + 클라이언트(IP) 버킷을 함께 적용하고
+# (사용자명 회전 우회 차단), 가입은 클라이언트 버킷으로 제한한다(사용자명 회전 CPU/저장 소모 차단).
+# login_rate_window_seconds = 60
+# login_max_per_account = 10
+# login_max_per_client = 30
+# signup_rate_window_seconds = 3600
+# signup_max_per_client = 10
+# exchange_rate_window_seconds = 60
+# exchange_max_per_client = 20

@@ -12,6 +12,7 @@
     {% endif %}
 
     <form method="post" action="/ui/generate">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <p><label>목표 타입</label><br>
         <select class="field" name="target_type">
           <option value="adr">adr</option>

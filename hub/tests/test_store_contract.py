@@ -13,6 +13,7 @@ import os
 import pytest
 
 from hub.config import ApprovalConfig, Config
+from hub.tests.authhelpers import admin, member
 from hub.service import KnowledgeService
 
 DSN = os.environ.get("WHYHUB_TEST_DSN")
@@ -43,11 +44,11 @@ def make_svc(request, tmp_path):
     """백엔드 파라미터라이즈 서비스 팩토리. postgres 는 매 테스트 스키마 truncate 로 격리."""
     created: list[KnowledgeService] = []
 
-    def _make(*, approval=False, admins=("alice",)):
+    def _make(*, approval=False):
         cfg = Config()
         cfg.default_project = "why-hub"
         if approval:
-            cfg.approval = ApprovalConfig(enabled=True, admins=list(admins))
+            cfg.approval = ApprovalConfig(enabled=True)
         if request.param == "postgres":
             cfg.storage = "postgres"
             cfg.postgres.dsn = DSN
@@ -111,7 +112,7 @@ def test_approval_flow(make_svc):
     assert sub["status"] == "pending"
     assert svc.get_document("adr-0001") is None  # 승인 전 미반영
     with pytest.raises(PermissionError):
-        svc.approve_submission(sub["submission_id"], approver="carol")
-    svc.approve_submission(sub["submission_id"], approver="alice")
+        svc.approve_submission(sub["submission_id"], principal=member("carol"))
+    svc.approve_submission(sub["submission_id"], principal=admin("alice"))
     assert svc.get_document("adr-0001") is not None
     assert any(h["doc_id"] == "adr-0001" for h in svc.search_knowledge("세션"))
